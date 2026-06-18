@@ -1,6 +1,6 @@
 {
   "name": "screenslick-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local MCP server for controlling the ScreenSlick browser editor.",
   "license": "MIT",
   "type": "module",

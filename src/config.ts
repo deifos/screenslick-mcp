@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,6 +7,20 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 32117;
 export const WS_PATH = "/screenslick-agent";
+export const PACKAGE_VERSION = readPackageVersion();
+
+function readPackageVersion() {
+  try {
+    const packageJson = JSON.parse(
+      readFileSync(join(packageRoot, "package.json"), "utf8"),
+    ) as { version?: unknown };
+    return typeof packageJson.version === "string"
+      ? packageJson.version
+      : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 export function getConfig() {
   const port = Number(process.env.SCREEN_SLICK_AGENT_PORT ?? DEFAULT_PORT);

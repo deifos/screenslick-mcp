@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { callEditor, ensureBridge, getBridgeStatus } from "./bridge.js";
+import { PACKAGE_VERSION } from "./config.js";
 import { debugLog } from "./log.js";
 import {
   editorMethods,
@@ -64,7 +65,7 @@ async function callScreenSlickTool(name: ToolName, args: unknown) {
 async function main() {
   const server = new McpServer({
     name: "screenslick",
-    version: "0.1.0",
+    version: PACKAGE_VERSION,
   });
 
   for (const [name, inputSchema] of Object.entries(passthroughToolSchemas) as [
