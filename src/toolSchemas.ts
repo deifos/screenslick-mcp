@@ -3,6 +3,21 @@ import { z } from "zod";
 const emptySchema = z.object({}).strict();
 const jsonObjectSchema = z.record(z.unknown());
 const optionalJsonObjectSchema = jsonObjectSchema.optional();
+const cleanupSectionSchema = z.enum([
+  "voiceover",
+  "music",
+  "text",
+  "images",
+  "zoom",
+  "blur",
+  "spotlight",
+  "clipPosition",
+  "freeze",
+  "tapMarkers",
+  "subtitles",
+  "background",
+  "cameraOverlay",
+]);
 
 const scriptClipSchema = z
   .object({
@@ -88,6 +103,12 @@ export const passthroughToolSchemas = {
       enabled: z.boolean().optional(),
     })
     .strict(),
+  screenslick_cleanup_timeline: z
+    .object({
+      sections: z.array(cleanupSectionSchema).optional(),
+      dryRun: z.boolean().optional(),
+    })
+    .strict(),
   screenslick_apply_commands: z
     .object({
       commands: z.array(jsonObjectSchema),
@@ -137,6 +158,8 @@ export const toolDescriptions: Record<ToolName, string> = {
     "Preview or stop the current generated ScreenSlick voiceover.",
   screenslick_toggle_voiceover:
     "Enable or disable the current generated ScreenSlick voiceover track.",
+  screenslick_cleanup_timeline:
+    "Clear selected editor timeline layers such as voiceover, music, text, effects, captions, background, and camera overlay without deleting source video clips.",
   screenslick_apply_commands:
     "Apply a batch of validated creative edit commands to the editor timeline. Call screenslick_get_capabilities first to learn the valid command shapes and effect fields.",
   screenslick_capture_frame:
@@ -161,6 +184,7 @@ export const editorMethods: Partial<Record<ToolName, string>> = {
   screenslick_clear_voiceover: "clear_voiceover",
   screenslick_preview_voiceover: "preview_voiceover",
   screenslick_toggle_voiceover: "toggle_voiceover",
+  screenslick_cleanup_timeline: "cleanup_timeline",
   screenslick_apply_commands: "apply_commands",
   screenslick_capture_frame: "capture_frame",
   screenslick_export_video: "export_video",

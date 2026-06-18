@@ -98,8 +98,10 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` globally:
 - `screenslick_generate_script`
 - `screenslick_generate_voiceover`
 - `screenslick_add_transcript_voiceover_to_timeline`
+- `screenslick_clear_voiceover`
 - `screenslick_preview_voiceover`
 - `screenslick_toggle_voiceover`
+- `screenslick_cleanup_timeline`
 - `screenslick_apply_commands`
 - `screenslick_capture_frame`
 - `screenslick_export_video`
@@ -187,5 +189,7 @@ For testing the built package:
 - Uses structured input schemas for every tool.
 - Routes editor actions through ScreenSlick's native editor APIs instead of
   processing video files directly.
+- Provides cleanup tools so agents can clear generated layers before rebuilding
+  a pass while preserving the source video clips.
 - Treats premium voice generation as a consent boundary: agents should ask
   before using premium/Gemini voices because they can consume credits.
