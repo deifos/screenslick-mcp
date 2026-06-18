@@ -149,6 +149,23 @@ npm run dev
 
 Use development mode from this repo:
 
+For live source changes:
+
+```json
+{
+  "mcpServers": {
+    "screenslick": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["tsx", "src/index.ts"],
+      "cwd": "/path/to/screenslick-mcp"
+    }
+  }
+}
+```
+
+For testing the built package:
+
 ```json
 {
   "mcpServers": {
