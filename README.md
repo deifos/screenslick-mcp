@@ -23,7 +23,7 @@ client:
     "screenslick": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@screenslick/mcp"]
+      "args": ["-y", "screenslick-mcp"]
     }
   }
 }
@@ -36,7 +36,7 @@ If your client uses form fields:
 | Name | `screenslick` |
 | Transport | `stdio` |
 | Command | `npx` |
-| Arguments | `-y`, `@screenslick/mcp` |
+| Arguments | `-y`, `screenslick-mcp` |
 
 ## Claude Code
 
@@ -48,7 +48,7 @@ Project-scoped `.mcp.json`:
     "screenslick": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@screenslick/mcp"]
+      "args": ["-y", "screenslick-mcp"]
     }
   }
 }
@@ -64,7 +64,7 @@ Add a stdio server entry to your Codex config:
 ```toml
 [mcp_servers.screenslick]
 command = "npx"
-args = ["-y", "@screenslick/mcp"]
+args = ["-y", "screenslick-mcp"]
 startup_timeout_sec = 10
 tool_timeout_sec = 120
 ```
@@ -78,7 +78,7 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` globally:
   "mcpServers": {
     "screenslick": {
       "command": "npx",
-      "args": ["-y", "@screenslick/mcp"]
+      "args": ["-y", "screenslick-mcp"]
     }
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@screenslick/mcp",
+  "name": "screenslick-mcp",
   "version": "0.1.0",
   "description": "Local MCP server for controlling the ScreenSlick browser editor.",
   "license": "MIT",
