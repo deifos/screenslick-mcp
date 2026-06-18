@@ -77,6 +77,7 @@ export const passthroughToolSchemas = {
       clips: z.array(scriptClipSchema).optional(),
     })
     .strict(),
+  screenslick_clear_voiceover: emptySchema,
   screenslick_preview_voiceover: z
     .object({
       action: z.enum(["start", "stop"]).optional(),
@@ -130,6 +131,8 @@ export const toolDescriptions: Record<ToolName, string> = {
     "Generate a full voiceover track using ScreenSlick's native voiceover flow.",
   screenslick_add_transcript_voiceover_to_timeline:
     "Add transcript or agent-provided script voiceover clips to the timeline.",
+  screenslick_clear_voiceover:
+    "Clear generated voiceover audio and timeline voiceover clips before replacing narration.",
   screenslick_preview_voiceover:
     "Preview or stop the current generated ScreenSlick voiceover.",
   screenslick_toggle_voiceover:
@@ -155,6 +158,7 @@ export const editorMethods: Partial<Record<ToolName, string>> = {
   screenslick_generate_voiceover: "generate_voiceover",
   screenslick_add_transcript_voiceover_to_timeline:
     "add_transcript_voiceover_to_timeline",
+  screenslick_clear_voiceover: "clear_voiceover",
   screenslick_preview_voiceover: "preview_voiceover",
   screenslick_toggle_voiceover: "toggle_voiceover",
   screenslick_apply_commands: "apply_commands",
