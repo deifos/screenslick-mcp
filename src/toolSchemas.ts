@@ -137,7 +137,7 @@ export const toolDescriptions: Record<ToolName, string> = {
   screenslick_apply_commands:
     "Apply a batch of validated creative edit commands to the editor timeline. Call screenslick_get_capabilities first to learn the valid command shapes and effect fields.",
   screenslick_capture_frame:
-    "Capture a PNG preview frame from the current editor.",
+    "Capture a Snap-style preview frame from the current editor. The local bridge saves large frame data to .tmp/agent-frames and returns filePath metadata.",
   screenslick_export_video:
     "Export the current editor project as an MP4 data URL.",
 };

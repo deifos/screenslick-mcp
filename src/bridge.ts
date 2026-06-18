@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { getConfig, WS_PATH } from "./config.js";
 import { debugLog } from "./log.js";
@@ -59,6 +61,40 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
   }
   if (chunks.length === 0) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonObject;
+}
+
+function persistAgentFrameResult(result: unknown) {
+  if (!result || typeof result !== "object") return result;
+  const frame = result as JsonObject;
+  const dataUrl = frame.dataUrl;
+  if (typeof dataUrl !== "string") return result;
+
+  const match = /^data:([^;,]+);base64,([\s\S]+)$/.exec(dataUrl);
+  if (!match) return result;
+
+  const mimeType = match[1] || String(frame.mimeType ?? "image/png");
+  const extension = mimeType.includes("jpeg")
+    ? "jpg"
+    : mimeType.includes("webp")
+      ? "webp"
+      : "png";
+  const directory = join(process.cwd(), ".tmp", "agent-frames");
+  mkdirSync(directory, { recursive: true });
+  const filename = `screenslick-frame-${Date.now()}-${randomUUID()}.${extension}`;
+  const filePath = join(directory, filename);
+  const bytes = Buffer.from(match[2], "base64");
+  writeFileSync(filePath, bytes);
+
+  const rest = { ...frame };
+  delete rest.dataUrl;
+  return {
+    ...rest,
+    mimeType,
+    size: bytes.length,
+    filePath,
+    filename,
+    dataUrlSaved: true,
+  };
 }
 
 class WebSocketConnection {
@@ -348,7 +384,9 @@ async function startBridgeServer() {
       if (request.method === "POST" && request.url === "/call") {
         const body = await readJsonBody(request);
         const method = String(body.method ?? "");
-        const result = await callEditor(method, body.params);
+        const result = persistAgentFrameResult(
+          await callEditor(method, body.params),
+        );
         sendJsonResponse(response, 200, { result });
         return;
       }
