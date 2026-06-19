@@ -1,10 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
-import { getConfig, WS_PATH } from "./config.js";
+import { AGENT_FRAMES_DIR, getConfig, WS_PATH } from "./config.js";
 import { debugLog } from "./log.js";
 
 type JsonObject = Record<string, unknown>;
@@ -13,6 +20,87 @@ type JsonObject = Record<string, unknown>;
 // fallback paths on the same ceiling. The status probe is a quick liveness check.
 const EDITOR_CALL_TIMEOUT_MS = 120_000;
 const BRIDGE_PROBE_TIMEOUT_MS = 5_000;
+
+// Cap a single inbound WS message so a malformed/garbage length field (or a
+// runaway editor) cannot make us allocate unbounded memory. Real payloads
+// (exported MP4, captured PNGs as data URLs) are large but well under this.
+const MAX_WS_MESSAGE_BYTES = 256 * 1024 * 1024;
+
+// Persisted frames are best-effort scratch data. Keep the directory bounded so
+// long-lived sessions don't accumulate forever.
+const MAX_AGENT_FRAMES = 200;
+const MAX_AGENT_FRAME_AGE_MS = 6 * 60 * 60 * 1000;
+
+let resolvedFramesDir: string | null = null;
+let framesWrittenSincePrune = 0;
+
+function resolveFramesDir(): string {
+  if (resolvedFramesDir) return resolvedFramesDir;
+  const candidates = [
+    AGENT_FRAMES_DIR,
+    join(tmpdir(), "screenslick-agent-frames"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      mkdirSync(candidate, { recursive: true });
+      resolvedFramesDir = candidate;
+      return candidate;
+    } catch (error) {
+      debugLog(
+        `agent frames dir unavailable ${candidate}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  // Last resort: the tmp root always exists.
+  resolvedFramesDir = tmpdir();
+  return resolvedFramesDir;
+}
+
+function pruneAgentFrames(directory: string) {
+  try {
+    const entries = readdirSync(directory)
+      .filter((name) => name.startsWith("screenslick-frame-"))
+      .map((name) => {
+        const full = join(directory, name);
+        try {
+          return { full, mtime: statSync(full).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry): entry is { full: string; mtime: number } => entry !== null);
+
+    const now = Date.now();
+    const survivors: { full: string; mtime: number }[] = [];
+    for (const entry of entries) {
+      if (now - entry.mtime > MAX_AGENT_FRAME_AGE_MS) {
+        try {
+          rmSync(entry.full, { force: true });
+        } catch {}
+      } else {
+        survivors.push(entry);
+      }
+    }
+
+    if (survivors.length > MAX_AGENT_FRAMES) {
+      survivors.sort((a, b) => a.mtime - b.mtime);
+      const excess = survivors.slice(0, survivors.length - MAX_AGENT_FRAMES);
+      for (const entry of excess) {
+        try {
+          rmSync(entry.full, { force: true });
+        } catch {}
+      }
+    }
+  } catch (error) {
+    debugLog(
+      `agent frame prune failed ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
 
 interface PendingEditorRequest {
   resolve: (value: unknown) => void;
@@ -63,7 +151,7 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonObject;
 }
 
-function persistAgentFrameResult(result: unknown) {
+function persistSingleAgentFrameResult(result: unknown) {
   if (!result || typeof result !== "object") return result;
   const frame = result as JsonObject;
   const dataUrl = frame.dataUrl;
@@ -78,12 +166,12 @@ function persistAgentFrameResult(result: unknown) {
     : mimeType.includes("webp")
       ? "webp"
       : "png";
-  const directory = join(process.cwd(), ".tmp", "agent-frames");
-  mkdirSync(directory, { recursive: true });
+  const directory = resolveFramesDir();
   const filename = `screenslick-frame-${Date.now()}-${randomUUID()}.${extension}`;
   const filePath = join(directory, filename);
   const bytes = Buffer.from(match[2], "base64");
   writeFileSync(filePath, bytes);
+  framesWrittenSincePrune += 1;
 
   const rest = { ...frame };
   delete rest.dataUrl;
@@ -95,6 +183,35 @@ function persistAgentFrameResult(result: unknown) {
     filename,
     dataUrlSaved: true,
   };
+}
+
+function persistAgentFrameResultInner(result: unknown, depth: number): unknown {
+  // Bound recursion against a hostile/buggy editor response. Real frame
+  // payloads are shallow; nothing legitimate nests this deep.
+  if (depth > 64) return result;
+  if (Array.isArray(result)) {
+    return result.map((item) => persistAgentFrameResultInner(item, depth + 1));
+  }
+  if (!result || typeof result !== "object") return result;
+
+  const frame = result as JsonObject;
+  const persistedFrame = persistSingleAgentFrameResult(frame) as JsonObject;
+  const output: JsonObject = {};
+  for (const [key, value] of Object.entries(persistedFrame)) {
+    output[key] = persistAgentFrameResultInner(value, depth + 1);
+  }
+  return output;
+}
+
+export function persistAgentFrameResult(result: unknown): unknown {
+  const persisted = persistAgentFrameResultInner(result, 0);
+  // Prune only after a response that actually wrote frames, so frameless
+  // editor calls (get_project, etc.) don't trigger filesystem churn.
+  if (framesWrittenSincePrune > 0 && resolvedFramesDir) {
+    framesWrittenSincePrune = 0;
+    pruneAgentFrames(resolvedFramesDir);
+  }
+  return persisted;
 }
 
 class WebSocketConnection {
@@ -174,13 +291,21 @@ class WebSocketConnection {
         offset += 8;
       }
 
+      if (length > MAX_WS_MESSAGE_BYTES) {
+        debugLog(`ws frame length ${length} exceeds cap; closing`);
+        this.close();
+        return;
+      }
+
       const maskLength = masked ? 4 : 0;
       const frameEnd = offset + maskLength + length;
       if (this.buffer.length < frameEnd) return;
 
       const mask = masked ? this.buffer.subarray(offset, offset + 4) : null;
       offset += maskLength;
-      const payload = Buffer.from(this.buffer.subarray(offset, offset + length));
+      const payload = Buffer.from(
+        this.buffer.subarray(offset, offset + length),
+      );
       this.buffer = this.buffer.subarray(frameEnd);
 
       if (mask) {
@@ -216,6 +341,12 @@ class WebSocketConnection {
           return;
         }
         this.fragments.push(payload);
+        const total = this.fragments.reduce((sum, part) => sum + part.length, 0);
+        if (total > MAX_WS_MESSAGE_BYTES) {
+          debugLog(`ws fragmented message ${total} exceeds cap; closing`);
+          this.close();
+          return;
+        }
       } else {
         debugLog(`ignoring unsupported ws opcode 0x${opcode.toString(16)}`);
         continue;
@@ -268,7 +399,9 @@ class WebSocketConnection {
     clearTimeout(pending.timer);
     pendingEditorRequests.delete(response.id);
     if (response.error) {
-      pending.reject(new Error(String(response.error.message ?? "Editor error.")));
+      pending.reject(
+        new Error(String(response.error.message ?? "Editor error.")),
+      );
     } else {
       pending.resolve(response.result);
     }
@@ -295,13 +428,17 @@ async function fetchBridgeStatus() {
   return response.json();
 }
 
-async function callExternalBridge(method: string, params: unknown) {
+async function callExternalBridge(
+  method: string,
+  params: unknown,
+  timeoutMs: number,
+) {
   const { bridgeBaseUrl } = getConfig();
   const response = await fetch(`${bridgeBaseUrl}/call`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ method, params }),
-    signal: AbortSignal.timeout(EDITOR_CALL_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const payload = (await response.json()) as {
     result?: unknown;
@@ -313,12 +450,17 @@ async function callExternalBridge(method: string, params: unknown) {
   return payload.result;
 }
 
-export async function callEditor(method: string, params: unknown) {
+export async function callEditor(
+  method: string,
+  params: unknown,
+  options?: { timeoutMs?: number },
+) {
+  const timeoutMs = options?.timeoutMs ?? EDITOR_CALL_TIMEOUT_MS;
   await ensureBridge();
 
   if (!activeEditor || activeEditor.closed) {
     if (!serverPromise) {
-      return callExternalBridge(method, params);
+      return callExternalBridge(method, params, timeoutMs);
     }
     throw new Error(
       "No active ScreenSlick editor session. Open the editor and enable Agent.",
@@ -331,8 +473,10 @@ export async function callEditor(method: string, params: unknown) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingEditorRequests.delete(id);
-      reject(new Error(`ScreenSlick editor did not answer "${method}" in time.`));
-    }, EDITOR_CALL_TIMEOUT_MS);
+      reject(
+        new Error(`ScreenSlick editor did not answer "${method}" in time.`),
+      );
+    }, timeoutMs);
     pendingEditorRequests.set(id, { resolve, reject, timer });
   });
 }
@@ -394,14 +538,15 @@ async function startBridgeServer() {
       sendJsonResponse(response, 404, { error: "Not found" });
     } catch (error) {
       sendJsonResponse(response, 500, {
-        error:
-          error instanceof Error ? error.message : "Unknown bridge error.",
+        error: error instanceof Error ? error.message : "Unknown bridge error.",
       });
     }
   });
 
   server.on("upgrade", (request, socket, head) => {
-    debugLog(`upgrade url=${request.url} remote=${request.socket.remoteAddress}`);
+    debugLog(
+      `upgrade url=${request.url} remote=${request.socket.remoteAddress}`,
+    );
     if (
       request.url !== WS_PATH ||
       !isLocalRequest(request) ||

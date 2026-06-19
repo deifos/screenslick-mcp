@@ -9,6 +9,14 @@ export const DEFAULT_PORT = 32117;
 export const WS_PATH = "/screenslick-agent";
 export const PACKAGE_VERSION = readPackageVersion();
 
+// Persisted capture/export frames live under the package root by default (next
+// to the log), NOT process.cwd(), which is unpredictable when an MCP client
+// launches us. Overridable for sandboxed installs where the package dir is
+// read-only.
+export const AGENT_FRAMES_DIR =
+  process.env.SCREEN_SLICK_AGENT_FRAMES_DIR ??
+  join(packageRoot, ".tmp", "agent-frames");
+
 function readPackageVersion() {
   try {
     const packageJson = JSON.parse(
