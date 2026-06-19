@@ -694,15 +694,23 @@ function analyzeProject(project: unknown) {
     voiceoverStatus,
   );
   const voiceoverStatusRecord = asRecord(voiceoverStatus);
-  const hiddenGeneratedVoiceover =
-    voiceoverClips.length === 0 &&
+  const hasGeneratedVoiceoverTrack =
     voiceoverStatusRecord?.hasGeneratedTrack === true &&
     (getNumber(voiceoverStatusRecord.timedSegmentCount) ?? 0) > 0;
+  const hiddenGeneratedVoiceover =
+    voiceoverClips.length === 0 && hasGeneratedVoiceoverTrack;
+  const mixedGeneratedVoiceover =
+    voiceoverClips.length > 0 && hasGeneratedVoiceoverTrack;
 
   const issues = [...voiceoverAnalysis.issues];
   if (hiddenGeneratedVoiceover) {
     issues.push(
       "Generated full-track voiceover exists, but there are no editable timeline voiceover clips. Rebuild narration with timeline voiceover tools so the user can edit and regenerate it.",
+    );
+  }
+  if (mixedGeneratedVoiceover) {
+    issues.push(
+      "Timeline voiceover clips and a generated full-track voiceover both exist. Clear the generated track to avoid doubled audio and keep narration editable.",
     );
   }
   if (timelineClips.length === 0 && sourceClips.length === 0) {
@@ -765,6 +773,7 @@ function analyzeProject(project: unknown) {
             : "none",
       editable: voiceoverClips.length > 0,
       hiddenGeneratedTrack: hiddenGeneratedVoiceover,
+      fullTrackConflict: hiddenGeneratedVoiceover || mixedGeneratedVoiceover,
       firstClips: voiceoverClips.slice(0, 8).map((clip) => {
         const record = asRecord(clip) ?? {};
         return {
