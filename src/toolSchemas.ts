@@ -234,6 +234,8 @@ export const passthroughToolSchemas = {
       script: z.string().optional(),
       clips: z.array(scriptClipSchema).optional(),
       enable: z.boolean().optional(),
+      mode: z.enum(["timeline-clips", "full-track"]).optional(),
+      editable: z.boolean().optional(),
     })
     .strict(),
   screenslick_add_transcript_voiceover_to_timeline: z
@@ -388,9 +390,9 @@ export const toolDescriptions: Record<ToolName, string> = {
   screenslick_create_demo_video:
     "Create or dry-run a safe Director Mode first-draft demo edit with editor-native silence removal, local captions, local or confirmed-premium voiceover, intro/outro text, camera layout polish, canvas styling, optional music, subtle motion, and automatic director review.",
   screenslick_generate_voiceover:
-    "Generate a full voiceover track using ScreenSlick's native voiceover flow.",
+    "Generate voiceover using ScreenSlick's native voiceover flow. Defaults to editable timeline voiceover clips so users can edit, move, delete, and regenerate agent-created narration. Pass mode='full-track' or editable=false only when the user explicitly wants one flattened generated voiceover track.",
   screenslick_add_transcript_voiceover_to_timeline:
-    "Add transcript or agent-provided script voiceover clips to the timeline.",
+    "Add transcript or agent-provided script voiceover clips to the editable timeline. This is the preferred narration tool for agent edits.",
   screenslick_clear_voiceover:
     "Clear generated voiceover audio and timeline voiceover clips before replacing narration.",
   screenslick_replace_voiceover_clips:

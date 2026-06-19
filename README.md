@@ -123,6 +123,8 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` globally:
 - `screenslick_capture_frame`
 - `screenslick_export_video`
 
+Voiceover tools are intentionally editable-first. Agent-created narration should use timeline voiceover clips so the user can see the clips in the sidebar, edit text, move them, delete them, and regenerate audio. `screenslick_generate_voiceover` defaults to that editable workflow; only pass `mode: "full-track"` or `editable: false` when the user explicitly wants one flattened generated track.
+
 ## Environment variables
 
 | Variable                  | Default                                  | Purpose               |
