@@ -125,6 +125,8 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` globally:
 
 Voiceover tools are intentionally editable-first. Agent-created narration should use timeline voiceover clips so the user can see the clips in the sidebar, edit text, move them, delete them, and regenerate audio. `screenslick_generate_voiceover` defaults to that editable workflow; only pass `mode: "full-track"` or `editable: false` when the user explicitly wants one flattened generated track.
 
+For intro/outro/intermission cards, keep card layers inset instead of flush with the hold edges. Text should usually start a few tenths of a second after the card begins and end before the card ends. Card voiceover should start after the text entrance and leave at least 500ms before a terminal card or final timeline end, especially with premium voices where generated audio can run longer than the requested target.
+
 ## Environment variables
 
 | Variable                  | Default                                  | Purpose               |
@@ -225,5 +227,7 @@ For testing the built package:
 - Runs Director Mode reviews around high-level demo drafts so agents can catch
   structure, narration, caption, music, SFX, and visual-polish issues before
   calling an edit done.
+- Guides agents to inset intro/outro card text and voiceover inside the card
+  duration so terminal CTA audio does not clip on the final frame.
 - Treats premium voice generation as a consent boundary: agents should ask
   before using premium/Gemini voices because they can consume credits.

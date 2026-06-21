@@ -127,6 +127,8 @@ Keep the ScreenSlick skill and MCP capability descriptions aligned with editing 
 
 - `screenslick_review_director_draft`
 - intro at the beginning, CTA/outro near the end
+- intro/outro card text and voiceover inset inside the card duration
+- terminal CTA voiceover leaves tail room before the final frame
 - type/scramble text gets typing/click sounds
 - slide/zoom gets swoosh/whoosh
 - music ducks under speech

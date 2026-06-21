@@ -363,7 +363,7 @@ export const toolDescriptions: Record<ToolName, string> = {
   screenslick_analyze_timeline:
     "Return a compact agent-friendly summary of the current timeline, layers, voiceover/caption/music state, and likely issues.",
   screenslick_review_director_draft:
-    "Review the current project with ScreenSlick director taste rules: intro/outro placement, caption/narration readiness, music/SFX fit, visual polish, and final QA next steps. Does not mutate the editor.",
+    "Review the current project with ScreenSlick director taste rules: intro/outro placement, inset card text/voiceover timing, caption/narration readiness, music/SFX fit, visual polish, and final QA next steps. Does not mutate the editor.",
   screenslick_validate_voiceover_timing:
     "Inspect timeline voiceover clips for overlaps, long gaps, duplicates, missing audio durations, and disabled playback.",
   screenslick_find_clip_candidates:
@@ -388,7 +388,7 @@ export const toolDescriptions: Record<ToolName, string> = {
   screenslick_director_plan:
     "Create a planning-first Director Mode edit plan from the current ScreenSlick project and a broad creative prompt. Does not mutate the editor.",
   screenslick_create_demo_video:
-    "Create or dry-run a safe Director Mode first-draft demo edit with editor-native silence removal, local captions, local or confirmed-premium voiceover, intro/outro text, camera layout polish, canvas styling, optional music, subtle motion, and automatic director review.",
+    "Create or dry-run a safe Director Mode first-draft demo edit with editor-native silence removal, local captions, local or confirmed-premium voiceover, inset intro/outro text, camera layout polish, canvas styling, optional music, subtle motion, and automatic director review.",
   screenslick_generate_voiceover:
     "Generate voiceover using ScreenSlick's native voiceover flow. Defaults to editable timeline voiceover clips so users can edit, move, delete, and regenerate agent-created narration. Pass mode='full-track' or editable=false only when the user explicitly wants one flattened generated voiceover track.",
   screenslick_add_transcript_voiceover_to_timeline:

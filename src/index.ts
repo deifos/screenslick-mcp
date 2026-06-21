@@ -1032,6 +1032,8 @@ function buildDirectorDraftReview(args: unknown, project: unknown) {
     ],
     tasteRules: [
       "Place intro/title text at the beginning and CTA/outro text near the end.",
+      "For intermission/title cards, inset text and voiceover inside the card instead of filling the whole hold.",
+      "Terminal CTA voiceover should finish at least 500ms before the final timeline end; premium TTS duration must be checked after generation.",
       "Use typing/click/tick SFX for typewriter or scramble text; use swoosh/whoosh for spatial motion.",
       "Treat entrance and exit animations as separate beats with separate SFX choices.",
       "Keep captions readable and synchronized after silence removal.",
@@ -1257,6 +1259,7 @@ function buildDirectorPlan(args: unknown, project: unknown) {
     executionNotes: [
       "Run dry-run steps before mutating broad timeline layers.",
       "Place intro at the beginning and CTA/outro near the end.",
+      "Inset card text and narration inside intermission/freeze holds; leave tail room before terminal cards end.",
       "Use typing/click SFX for typewriter or scramble text; use swoosh/whoosh for spatial movement.",
       "Duck music under narration and keep captions readable.",
       "After applying visual edits, capture a frame and re-run timeline analysis.",
@@ -1399,11 +1402,16 @@ function buildDemoVideoCommands(args: unknown, analysis: unknown) {
     });
 
     const outroStart = Math.max(0, durationSeconds - 3.8);
+    const outroTextStart = Math.min(durationSeconds, outroStart + 0.25);
+    const outroDuration = Math.max(
+      0.6,
+      Math.min(3.0, Math.max(0.1, durationSeconds - outroTextStart - 0.5)),
+    );
     commands.push({
       type: "text.add",
       text: outroText,
-      startTime: outroStart,
-      duration: Math.min(3.6, Math.max(2.4, durationSeconds - outroStart)),
+      startTime: outroTextStart,
+      duration: outroDuration,
       x: 0.1,
       y: 0.4,
       updates: {
@@ -1481,6 +1489,7 @@ function buildDemoVideoCommands(args: unknown, analysis: unknown) {
     prompt,
     title,
     outroText,
+    durationSeconds,
     aspectRatio,
     musicTrackId: includeMusic ? musicTrackId : null,
     backgroundId: includeBackground ? backgroundId : null,
@@ -1539,6 +1548,22 @@ function reviewDemoVideoDraftCommands(draft: unknown, args: unknown) {
   }
   if (outro) {
     addFinding("pass", "structure", "Draft includes CTA/outro-style text.");
+    const startTime = getNumber(outro.startTime) ?? 0;
+    const duration = getNumber(outro.duration) ?? 0;
+    const endTime = startTime + duration;
+    const inferredDuration =
+      typeof draftRecord.durationSeconds === "number"
+        ? draftRecord.durationSeconds
+        : getNumber(draftRecord.durationSeconds);
+    const totalDuration = inferredDuration ?? getNumber(draftRecord.timelineDuration);
+    if (totalDuration !== null && endTime > totalDuration - 0.3) {
+      addFinding(
+        "warning",
+        "structure",
+        "Draft CTA text runs too close to the final frame.",
+        "Inset outro text inside the card or final section so it ends before the timeline end.",
+      );
+    }
   } else {
     addFinding(
       "warning",
