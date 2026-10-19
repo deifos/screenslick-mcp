@@ -12,6 +12,52 @@ ws://127.0.0.1:32117/screenslick-agent
 Open ScreenSlick, enter the editor, click **Agent**, then ask your MCP client to
 call `screenslick_bridge_status`.
 
+## Motion Studio (`npx -y screenslick-mcp studio`)
+
+The same package ships the local half of **Motion Studio** (ScreenSlick → Motion Studio, `/studio`):
+Claude Code builds Remotion videos on your computer while you watch the live preview and edit every layer
+on the timeline in the browser.
+
+```bash
+npx -y screenslick-mcp studio              # workspace in ~/ScreenSlick Studio
+npx -y screenslick-mcp studio --dir D:\videos --no-bash
+npx -y screenslick-mcp studio --add-dir path/to/your-app   # let Claude read your app's code (remembered)
+```
+
+It needs Claude Code installed and logged in (`claude`). The command:
+
+- creates or refreshes the workspace: `projects/<slug>/` (project.json, layers.json, scenes/*.tsx, assets/,
+  renders/), the `screenslick-video-studio` skill in `.claude/skills/`, and the shared runtime in
+  `.screenslick/` (managed files are rewritten on every start; projects are never touched);
+- owns the bridge on `127.0.0.1:32117`. If a ScreenSlick MCP server (the editor tools in a Claude session)
+  already holds the port, the helper asks it to hand the port over (`POST /handoff`); that server then
+  forwards its calls to the helper, and the editor page reconnects by itself. Servers older than 0.16
+  can't hand over: restart that Claude session once;
+- bundles each open project with esbuild and hot-reloads the page when files change;
+- serves project files to the page (range requests) and saves uploads and exports into the project;
+- runs `claude -p` (stream-json, resumed per project) for the chat panel, with the `screenslick_studio_*`
+  MCP tools: status, create/open project, capture frames, contact sheet, media info, transcribe, analyze
+  audio, listen (measure, rank, tags, realness, critique), voice-overs, music (Lyria and the ScreenSlick
+  library), export, focus. Folders added with `--add-dir` are readable; Claude's edit tools are blocked
+  there (`--disallowedTools Edit(...)`);
+- keeps voice/music provider keys in `~/.screenslick/studio-keys.json` (mode 600, outside the workspace)
+  and strips them from Claude's environment;
+- renders locally with Remotion as a fallback (`npm install` in the workspace on first use).
+
+Only these web origins can use it: `https://screenslick.com`, `https://www.screenslick.com` and
+`http://localhost:3005` (add more with `--origin <url>` or `SCREENSLICK_STUDIO_ORIGINS`). Requests from any
+other website are refused. Claude may run shell commands in the workspace unless you pass `--no-bash`.
+
+Update the bundled skill from the ScreenSlick repo with `npm run sync:skill`.
+
+The current browser app connects on port 32117. Keep that default for the Studio
+page. A custom `--port` is passed to the workspace MCP configuration, but does
+not change the browser's connection address.
+
+Before release, run `npm run build`, `npm run verify:media`,
+`npm run verify:bridge-tools`, and `npm run verify:studio-release`. The Studio
+checks use a temporary workspace and a separate port.
+
 ## Install
 
 No ScreenSlick source checkout is required. Use the npm package from your MCP
@@ -121,19 +167,28 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` globally:
 - `screenslick_cleanup_timeline`
 - `screenslick_apply_commands`
 - `screenslick_capture_frame`
+- `screenslick_capture_frames`
+- `screenslick_get_source_file`
+- `screenslick_import_voiceover_audio`
 - `screenslick_export_video`
 
 Voiceover tools are intentionally editable-first. Agent-created narration should use timeline voiceover clips so the user can see the clips in the sidebar, edit text, move them, delete them, and regenerate audio. `screenslick_generate_voiceover` defaults to that editable workflow; only pass `mode: "full-track"` or `editable: false` when the user explicitly wants one flattened generated track.
+
+Agents that make narration with their own TTS can keep it editable: `screenslick_import_voiceover_audio` takes one audio file per line (absolute path, `startMs`, and the spoken text) and adds them as timeline voiceover clips with captions. They move, delete, and export like other clips; to change a line, import a new take.
+
+`screenslick_capture_frames` samples up to 60 frames per call (explicit times, or a range with `fps`) and saves each one to a file. `screenslick_get_source_file` saves the loaded source video to a local file for ffmpeg or other analysis. These three tools need an editor build that supports them; an older editor tab gets a clear "reload the editor" error.
 
 For intro/outro/intermission cards, keep card layers inset instead of flush with the hold edges. Text should usually start a few tenths of a second after the card begins and end before the card ends. Card voiceover should start after the text entrance and leave at least 500ms before a terminal card or final timeline end, especially with premium voices where generated audio can run longer than the requested target.
 
 ## Environment variables
 
-| Variable                  | Default                                  | Purpose               |
-| ------------------------- | ---------------------------------------- | --------------------- |
-| `SCREEN_SLICK_AGENT_PORT` | `32117`                                  | Local bridge port     |
-| `SCREEN_SLICK_AGENT_HOST` | `127.0.0.1`                              | Must remain localhost |
-| `SCREEN_SLICK_AGENT_LOG`  | package `.tmp/screenslick-agent-mcp.log` | Debug log path        |
+| Variable                        | Default                                  | Purpose                                  |
+| ------------------------------- | ---------------------------------------- | ---------------------------------------- |
+| `SCREEN_SLICK_AGENT_PORT`       | `32117`                                  | Local bridge port                        |
+| `SCREEN_SLICK_AGENT_HOST`       | `127.0.0.1`                              | Must remain localhost                    |
+| `SCREEN_SLICK_AGENT_LOG`        | package `.tmp/screenslick-agent-mcp.log` | Debug log path                           |
+| `SCREEN_SLICK_AGENT_FRAMES_DIR` | package `.tmp/agent-frames`              | Captured frame files                     |
+| `SCREEN_SLICK_AGENT_ASSETS_DIR` | system temp `screenslick-agent-assets`   | Downloaded source videos (newest 5 kept) |
 
 The bridge is intentionally localhost-only. Remote hosts are rejected.
 
@@ -168,6 +223,13 @@ Healthy response:
 npm install
 npm run build
 npm run dev
+```
+
+Checks (no ScreenSlick session needed; they use their own port and temp folders):
+
+```bash
+npm run verify:media
+npm run verify:bridge-tools
 ```
 
 See [ROADMAP.md](./ROADMAP.md) for the Director Mode plan: reliability,

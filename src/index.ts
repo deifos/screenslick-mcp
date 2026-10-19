@@ -10,6 +10,12 @@ import {
 import { getConfig, PACKAGE_VERSION } from "./config.js";
 import { debugLog } from "./log.js";
 import {
+  assertEditorSupports,
+  buildImportVoiceoverPayload,
+  downloadSourceFile,
+} from "./media.js";
+import { registerStudioTools } from "./studio/tools.js";
+import {
   editorMethods,
   passthroughToolSchemas,
   toolDescriptions,
@@ -22,6 +28,10 @@ const EXPECTED_EDITOR_AGENT_PROTOCOL_VERSION = 1;
 // editor-call ceiling so a dead/unresponsive editor fails fast instead of
 // stacking multiple full-length timeouts across a single director tool call.
 const PROJECT_READ_TIMEOUT_MS = 20_000;
+
+// Batch frame capture seeks once per frame, and audio imports decode every
+// file in the browser, so both get more time than a single editor call.
+const BATCH_EDITOR_CALL_TIMEOUT_MS = 300_000;
 
 function getProject() {
   return callEditor("get_project", {}, { timeoutMs: PROJECT_READ_TIMEOUT_MS });
@@ -2094,6 +2104,32 @@ function selectVoiceInfo(capabilities: unknown) {
 }
 
 async function callScreenSlickTool(name: ToolName, args: unknown) {
+  if (name === "screenslick_capture_frames") {
+    assertEditorSupports(await ensureBridge(), "capture_frames", name);
+    return textContent(
+      persistAgentFrameResult(
+        await callEditor("capture_frames", args, {
+          timeoutMs: BATCH_EDITOR_CALL_TIMEOUT_MS,
+        }),
+      ),
+    );
+  }
+
+  if (name === "screenslick_get_source_file") {
+    assertEditorSupports(await ensureBridge(), "get_asset_file", name);
+    return textContent(await downloadSourceFile(callEditor, args));
+  }
+
+  if (name === "screenslick_import_voiceover_audio") {
+    assertEditorSupports(await ensureBridge(), "import_voiceover_audio", name);
+    const payload = await buildImportVoiceoverPayload(args);
+    return textContent(
+      await callEditor("import_voiceover_audio", payload, {
+        timeoutMs: BATCH_EDITOR_CALL_TIMEOUT_MS,
+      }),
+    );
+  }
+
   if (name === "screenslick_bridge_status") {
     await ensureBridge();
     return textContent(getBridgeStatus());
@@ -2296,7 +2332,9 @@ async function callScreenSlickTool(name: ToolName, args: unknown) {
     throw new Error(`Unknown ScreenSlick tool "${name}".`);
   }
 
-  const result = persistAgentFrameResult(await callEditor(editorMethod, args));
+  const result = persistAgentFrameResult(
+    await callEditor(editorMethod, args),
+  );
   if (name === "screenslick_list_voices") {
     return textContent(selectVoiceInfo(result));
   }
@@ -2322,6 +2360,8 @@ async function main() {
       async (args: unknown) => callScreenSlickTool(name, args),
     );
   }
+
+  registerStudioTools(server);
 
   void ensureBridge().catch((error) => {
     debugLog(

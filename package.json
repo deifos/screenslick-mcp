@@ -1,7 +1,7 @@
 {
   "name": "screenslick-mcp",
-  "version": "0.14.2",
-  "description": "Local MCP server for controlling the ScreenSlick browser editor.",
+  "version": "0.16.0",
+  "description": "Local MCP server and Claude Video Studio helper for the ScreenSlick browser editor.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +13,8 @@
     }
   },
   "bin": {
-    "screenslick-mcp": "dist/index.js"
+    "screenslick-mcp": "dist/cli.js",
+    "screenslick-studio": "dist/studio/cli.js"
   },
   "publishConfig": {
     "access": "public"
@@ -21,6 +22,7 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "template",
     "README.md",
     "SECURITY.md",
     "LICENSE"
@@ -29,7 +31,12 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:media": "tsx scripts/verify-media.ts",
+    "verify:studio-release": "tsx scripts/verify-studio-release.ts",
+    "verify:bridge-tools": "npm run build && tsx scripts/verify-bridge-tools.ts",
+    "studio": "tsx src/studio/cli.ts",
+    "sync:skill": "node scripts/sync-studio-skill.mjs"
   },
   "keywords": [
     "mcp",
@@ -43,6 +50,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "esbuild": "^0.28.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
