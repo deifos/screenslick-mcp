@@ -344,6 +344,40 @@ export const passthroughToolSchemas = {
       time: z.number().optional(),
     })
     .strict(),
+  screenslick_capture_frames: z
+    .object({
+      times: z.array(z.number()).min(1).max(60).optional(),
+      startTime: z.number().min(0).optional(),
+      endTime: z.number().min(0).optional(),
+      fps: z.number().positive().max(30).optional(),
+      maxWidth: z.number().int().positive().optional(),
+      format: z.enum(["png", "jpeg"]).optional(),
+    })
+    .strict(),
+  screenslick_get_source_file: z
+    .object({
+      assetId: z.string().optional(),
+    })
+    .strict(),
+  screenslick_import_voiceover_audio: z
+    .object({
+      clips: z
+        .array(
+          z
+            .object({
+              file: z.string(),
+              startMs: z.number().min(0),
+              text: z.string().optional(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(200),
+      replace: z.boolean().optional(),
+      captions: z.boolean().optional(),
+      enable: z.boolean().optional(),
+    })
+    .strict(),
   screenslick_export_video: z
     .object({
       settings: optionalJsonObjectSchema,
@@ -421,6 +455,12 @@ export const toolDescriptions: Record<ToolName, string> = {
     "Apply a batch of validated creative edit commands to the editor timeline. Call screenslick_get_capabilities first to learn the valid command shapes and effect fields.",
   screenslick_capture_frame:
     "Capture a Snap-style preview frame from the current editor. The local bridge saves large frame data to .tmp/agent-frames and returns filePath metadata.",
+  screenslick_capture_frames:
+    "Capture many preview frames in one call: pass times (seconds), or startTime/endTime with fps. At most 60 frames per call; JPEG at 1280px wide by default (set format/maxWidth to change). Each frame is saved to a file and returned with its timeline time. Use it to find scene changes, fades, and on-screen text.",
+  screenslick_get_source_file:
+    "Save the loaded source video to a local file and return its path, for ffmpeg or other analysis. Defaults to the asset under the playhead; pass assetId from screenslick_get_project to pick another. Returns companionPackageDir when the video came from a Companion recording folder on this machine. Downloads are cached by asset.",
+  screenslick_import_voiceover_audio:
+    "Import your own audio files as editable timeline voiceover clips: one entry per line with an absolute file path (wav, mp3, m4a, ogg, webm, flac), startMs, and the spoken text. Text becomes the clip label and its caption. Clips can be moved, deleted, and exported like other voiceover; they cannot be regenerated, so import a new take to change a line. Set replace=true to replace all existing voiceover clips.",
   screenslick_export_video:
     "Export the current editor project as an MP4 data URL.",
 };

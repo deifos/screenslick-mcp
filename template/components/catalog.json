@@ -1,0 +1,742 @@
+[
+  {
+    "id": "prompt-box",
+    "name": "Prompt Box",
+    "category": "AI & Product",
+    "description": "An AI chat input that types a request character by character, then presses send.",
+    "useWhen": "Showing what a user asks an AI feature (\"make a launch video…\") right before the result appears; demos of chat, search or command bars.",
+    "durationInFrames": 120,
+    "layer": "overlay",
+    "tags": [
+      "ai",
+      "prompt",
+      "chat",
+      "typing",
+      "input",
+      "search"
+    ],
+    "props": {
+      "text": {
+        "type": "text",
+        "label": "Prompt",
+        "default": "Make a 20 second launch video for my app",
+        "multiline": true,
+        "maxLength": 240
+      },
+      "placeholder": {
+        "type": "text",
+        "label": "Placeholder",
+        "default": "Describe your video…"
+      },
+      "label": {
+        "type": "text",
+        "label": "Label",
+        "default": "",
+        "help": "Optional small line above the box."
+      },
+      "theme": {
+        "type": "select",
+        "label": "Theme",
+        "default": "dark",
+        "options": [
+          {
+            "value": "dark",
+            "label": "Dark"
+          },
+          {
+            "value": "light",
+            "label": "Light"
+          }
+        ]
+      },
+      "accent": {
+        "type": "color",
+        "label": "Accent",
+        "default": "#34d399"
+      },
+      "speed": {
+        "type": "number",
+        "label": "Typing speed",
+        "default": 28,
+        "min": 6,
+        "max": 80,
+        "step": 1,
+        "unit": "chars/s"
+      },
+      "delay": {
+        "type": "number",
+        "label": "Start typing at",
+        "default": 12,
+        "min": 0,
+        "max": 90,
+        "step": 1,
+        "unit": "frames"
+      }
+    },
+    "examples": [
+      {
+        "name": "Dark",
+        "props": {}
+      },
+      {
+        "name": "Light search",
+        "props": {
+          "theme": "light",
+          "text": "Find every clip where I mention pricing",
+          "placeholder": "Search your recordings",
+          "accent": "#6366f1"
+        }
+      },
+      {
+        "name": "With label",
+        "props": {
+          "label": "Motion Studio",
+          "text": "Add a whoosh on every scene change and match the volume"
+        }
+      }
+    ]
+  },
+  {
+    "id": "stat-counter",
+    "name": "Stat Counter",
+    "category": "Charts & Stats",
+    "description": "A big number that counts up to its value with a label, optionally inside a progress ring.",
+    "useWhen": "Social proof and results: users, time saved, a percentage, revenue, a speed-up. One number per clip; put two side by side with two clips and boxes.",
+    "durationInFrames": 90,
+    "layer": "overlay",
+    "tags": [
+      "number",
+      "metric",
+      "kpi",
+      "counter",
+      "percentage",
+      "social proof"
+    ],
+    "props": {
+      "value": {
+        "type": "number",
+        "label": "Value",
+        "default": 12000,
+        "min": 0,
+        "max": 100000000,
+        "step": 1
+      },
+      "prefix": {
+        "type": "text",
+        "label": "Prefix",
+        "default": "",
+        "help": "e.g. $ or +"
+      },
+      "suffix": {
+        "type": "text",
+        "label": "Suffix",
+        "default": "+",
+        "help": "e.g. %, x, k. With % the ring fills to the value."
+      },
+      "decimals": {
+        "type": "number",
+        "label": "Decimals",
+        "default": 0,
+        "min": 0,
+        "max": 2,
+        "step": 1
+      },
+      "label": {
+        "type": "text",
+        "label": "Label",
+        "default": "videos made this month"
+      },
+      "accent": {
+        "type": "color",
+        "label": "Accent",
+        "default": "#34d399"
+      },
+      "textColor": {
+        "type": "color",
+        "label": "Text",
+        "default": "#ffffff"
+      },
+      "background": {
+        "type": "color",
+        "label": "Background",
+        "default": "transparent"
+      },
+      "ring": {
+        "type": "boolean",
+        "label": "Progress ring",
+        "default": false
+      },
+      "countFrames": {
+        "type": "number",
+        "label": "Count time",
+        "default": 45,
+        "min": 10,
+        "max": 120,
+        "step": 1,
+        "unit": "frames"
+      }
+    },
+    "examples": [
+      {
+        "name": "Users",
+        "props": {}
+      },
+      {
+        "name": "Percent ring",
+        "props": {
+          "value": 87,
+          "suffix": "%",
+          "label": "less time editing",
+          "ring": true,
+          "accent": "#60a5fa"
+        }
+      },
+      {
+        "name": "Revenue",
+        "props": {
+          "value": 2.4,
+          "decimals": 1,
+          "prefix": "$",
+          "suffix": "M",
+          "label": "saved in production costs",
+          "background": "#0b0d10",
+          "accent": "#f59e0b"
+        }
+      }
+    ]
+  },
+  {
+    "id": "lower-third",
+    "name": "Lower Third",
+    "category": "Overlays",
+    "description": "A name and role card with an accent bar that slides in near the bottom of the frame.",
+    "useWhen": "Introducing a speaker, a customer quote's author, a product or feature name over footage. Keep it on screen 3–5 seconds.",
+    "durationInFrames": 120,
+    "layer": "overlay",
+    "tags": [
+      "name",
+      "speaker",
+      "title card",
+      "caption",
+      "interview"
+    ],
+    "props": {
+      "name": {
+        "type": "text",
+        "label": "Name",
+        "default": "Vlad Palacio"
+      },
+      "title": {
+        "type": "text",
+        "label": "Role",
+        "default": "Founder, ScreenSlick",
+        "help": "Leave empty for a name-only card."
+      },
+      "accent": {
+        "type": "color",
+        "label": "Accent bar",
+        "default": "#34d399"
+      },
+      "textColor": {
+        "type": "color",
+        "label": "Text",
+        "default": "#ffffff"
+      },
+      "panel": {
+        "type": "color",
+        "label": "Card",
+        "default": "rgba(12,14,18,0.82)"
+      },
+      "position": {
+        "type": "select",
+        "label": "Position",
+        "default": "bottom-left",
+        "options": [
+          {
+            "value": "bottom-left",
+            "label": "Bottom left"
+          },
+          {
+            "value": "bottom-right",
+            "label": "Bottom right"
+          },
+          {
+            "value": "top-left",
+            "label": "Top left"
+          },
+          {
+            "value": "top-right",
+            "label": "Top right"
+          }
+        ]
+      },
+      "font": {
+        "type": "select",
+        "label": "Font",
+        "default": "sans",
+        "options": [
+          {
+            "value": "sans",
+            "label": "Sans"
+          },
+          {
+            "value": "display",
+            "label": "Display"
+          },
+          {
+            "value": "serif",
+            "label": "Serif"
+          },
+          {
+            "value": "mono",
+            "label": "Mono"
+          }
+        ]
+      }
+    },
+    "examples": [
+      {
+        "name": "Speaker",
+        "props": {}
+      },
+      {
+        "name": "Light card",
+        "props": {
+          "panel": "#ffffff",
+          "textColor": "#0b0d10",
+          "accent": "#f43f5e",
+          "name": "Maya Chen",
+          "title": "Head of Design"
+        }
+      },
+      {
+        "name": "Feature tag",
+        "props": {
+          "name": "Snaps workspace",
+          "title": "Screenshots on the canvas",
+          "position": "bottom-right",
+          "accent": "#60a5fa"
+        }
+      }
+    ]
+  },
+  {
+    "id": "slide-zoom-message",
+    "name": "Slide & Zoom Message",
+    "category": "Text & Titles",
+    "description": "A message slides in from the side with motion blur, the camera pushes in on its first words, travels along the line, then pulls back to show it all.",
+    "useWhen": "Introducing a message or claim with energy: the hook of a promo, a feature name, a bold statement before a reveal. Works best with one or two short lines; give it 3–5 seconds.",
+    "durationInFrames": 120,
+    "layer": "overlay",
+    "tags": [
+      "intro",
+      "kinetic type",
+      "camera",
+      "zoom",
+      "pan",
+      "motion blur",
+      "hook"
+    ],
+    "props": {
+      "lines": {
+        "type": "lines",
+        "label": "Message",
+        "default": [
+          "Your demos, *finally* sharp."
+        ],
+        "max": 2,
+        "help": "One or two short lines. *Starred* words use the accent color."
+      },
+      "enterFrom": {
+        "type": "select",
+        "label": "Slides in from",
+        "default": "left",
+        "options": [
+          {
+            "value": "left",
+            "label": "Left"
+          },
+          {
+            "value": "right",
+            "label": "Right"
+          }
+        ]
+      },
+      "pan": {
+        "type": "select",
+        "label": "Camera travels",
+        "default": "left",
+        "options": [
+          {
+            "value": "left",
+            "label": "Left → right along the line"
+          },
+          {
+            "value": "right",
+            "label": "Right → left"
+          }
+        ],
+        "help": "Where the push-in starts; the camera then travels to the other side."
+      },
+      "zoom": {
+        "type": "number",
+        "label": "Zoom",
+        "default": 2.2,
+        "min": 1.2,
+        "max": 4,
+        "step": 0.1,
+        "unit": "x"
+      },
+      "color": {
+        "type": "color",
+        "label": "Text",
+        "default": "#ffffff"
+      },
+      "accent": {
+        "type": "color",
+        "label": "Accent",
+        "default": "#34d399"
+      },
+      "background": {
+        "type": "color",
+        "label": "Background",
+        "default": "transparent"
+      },
+      "size": {
+        "type": "number",
+        "label": "Size",
+        "default": 9,
+        "min": 4,
+        "max": 18,
+        "step": 0.5,
+        "unit": "% of frame"
+      },
+      "weight": {
+        "type": "select",
+        "label": "Weight",
+        "default": "800",
+        "options": [
+          {
+            "value": "600",
+            "label": "Semibold"
+          },
+          {
+            "value": "800",
+            "label": "Extra bold"
+          },
+          {
+            "value": "900",
+            "label": "Black"
+          }
+        ]
+      },
+      "font": {
+        "type": "select",
+        "label": "Font",
+        "default": "sans",
+        "options": [
+          {
+            "value": "sans",
+            "label": "Sans"
+          },
+          {
+            "value": "display",
+            "label": "Display"
+          },
+          {
+            "value": "serif",
+            "label": "Serif"
+          },
+          {
+            "value": "mono",
+            "label": "Mono"
+          }
+        ]
+      },
+      "motionBlur": {
+        "type": "boolean",
+        "label": "Motion blur",
+        "default": true
+      }
+    },
+    "examples": [
+      {
+        "name": "Hook",
+        "props": {}
+      },
+      {
+        "name": "From the right",
+        "props": {
+          "lines": [
+            "Record. Edit. *Ship.*"
+          ],
+          "enterFrom": "right",
+          "pan": "right",
+          "accent": "#f43f5e"
+        }
+      },
+      {
+        "name": "On a color",
+        "props": {
+          "lines": [
+            "Meet *Motion Studio*"
+          ],
+          "background": "#111827",
+          "accent": "#60a5fa",
+          "zoom": 2.8
+        }
+      }
+    ],
+    "stillAt": 0.86
+  },
+  {
+    "id": "text-reveal",
+    "name": "Text Reveal",
+    "category": "Text & Titles",
+    "description": "A headline whose words rise into place one by one, with an optional kicker line and accent words.",
+    "useWhen": "Opening titles, section headers, a feature name before its demo, a promise or tagline. Mark words with *stars* to color them with the accent.",
+    "durationInFrames": 90,
+    "layer": "overlay",
+    "tags": [
+      "title",
+      "headline",
+      "kinetic type",
+      "intro",
+      "tagline"
+    ],
+    "props": {
+      "kicker": {
+        "type": "text",
+        "label": "Kicker",
+        "default": "New in ScreenSlick",
+        "help": "Small line above the headline (leave empty for none)."
+      },
+      "lines": {
+        "type": "lines",
+        "label": "Headline",
+        "default": [
+          "Make videos",
+          "with *Claude*"
+        ],
+        "max": 4,
+        "help": "One line per row. *Starred* words use the accent color."
+      },
+      "color": {
+        "type": "color",
+        "label": "Text",
+        "default": "#ffffff"
+      },
+      "accent": {
+        "type": "color",
+        "label": "Accent",
+        "default": "#34d399"
+      },
+      "background": {
+        "type": "color",
+        "label": "Background",
+        "default": "transparent",
+        "help": "\"transparent\" to sit over other layers."
+      },
+      "size": {
+        "type": "number",
+        "label": "Size",
+        "default": 11,
+        "min": 4,
+        "max": 22,
+        "step": 0.5,
+        "unit": "% of frame"
+      },
+      "weight": {
+        "type": "select",
+        "label": "Weight",
+        "default": "800",
+        "options": [
+          {
+            "value": "500",
+            "label": "Medium"
+          },
+          {
+            "value": "700",
+            "label": "Bold"
+          },
+          {
+            "value": "800",
+            "label": "Extra bold"
+          },
+          {
+            "value": "900",
+            "label": "Black"
+          }
+        ]
+      },
+      "font": {
+        "type": "select",
+        "label": "Font",
+        "default": "sans",
+        "options": [
+          {
+            "value": "sans",
+            "label": "Sans"
+          },
+          {
+            "value": "display",
+            "label": "Display"
+          },
+          {
+            "value": "serif",
+            "label": "Serif"
+          },
+          {
+            "value": "mono",
+            "label": "Mono"
+          }
+        ]
+      },
+      "align": {
+        "type": "select",
+        "label": "Align",
+        "default": "center",
+        "options": [
+          {
+            "value": "left",
+            "label": "Left"
+          },
+          {
+            "value": "center",
+            "label": "Center"
+          },
+          {
+            "value": "right",
+            "label": "Right"
+          }
+        ]
+      },
+      "stagger": {
+        "type": "number",
+        "label": "Word delay",
+        "default": 4,
+        "min": 1,
+        "max": 12,
+        "step": 1,
+        "unit": "frames"
+      },
+      "blur": {
+        "type": "boolean",
+        "label": "Motion blur",
+        "default": true
+      }
+    },
+    "examples": [
+      {
+        "name": "Launch title",
+        "props": {
+          "kicker": "New in ScreenSlick",
+          "lines": [
+            "Make videos",
+            "with *Claude*"
+          ]
+        }
+      },
+      {
+        "name": "Editorial",
+        "props": {
+          "kicker": "",
+          "lines": [
+            "Sharper recordings.",
+            "*Clearer* zooms."
+          ],
+          "font": "serif",
+          "weight": "500",
+          "accent": "#f59e0b"
+        }
+      },
+      {
+        "name": "Left, on brand color",
+        "props": {
+          "kicker": "Chapter 02",
+          "lines": [
+            "Simpler",
+            "editor *controls*"
+          ],
+          "align": "left",
+          "background": "#111827",
+          "accent": "#60a5fa"
+        }
+      }
+    ]
+  },
+  {
+    "id": "light-leak",
+    "name": "Light Leak",
+    "category": "Transitions",
+    "description": "A warm film light leak that blooms over the frame and retracts, covering a cut at its midpoint.",
+    "useWhen": "Soft, cinematic transitions between scenes or clips, reveals, the drop of a song, a dreamy or nostalgic look. Put it on a track above both clips and center it on the cut (from = cut frame − half its length).",
+    "durationInFrames": 40,
+    "layer": "overlay",
+    "tags": [
+      "transition",
+      "light leak",
+      "film",
+      "flare",
+      "cut",
+      "cinematic"
+    ],
+    "props": {
+      "seed": {
+        "type": "number",
+        "label": "Pattern",
+        "default": 3,
+        "min": 0,
+        "max": 40,
+        "step": 1,
+        "help": "Different numbers give different leak shapes."
+      },
+      "hueShift": {
+        "type": "number",
+        "label": "Hue",
+        "default": 0,
+        "min": 0,
+        "max": 360,
+        "step": 1,
+        "unit": "°",
+        "help": "0 warm amber, 120 green, 240 blue."
+      },
+      "strength": {
+        "type": "number",
+        "label": "Strength",
+        "default": 1,
+        "min": 0.2,
+        "max": 1,
+        "step": 0.05
+      },
+      "flash": {
+        "type": "boolean",
+        "label": "Bloom at the cut",
+        "default": false,
+        "help": "A brief soft white flash at the midpoint."
+      }
+    },
+    "examples": [
+      {
+        "name": "Warm",
+        "props": {}
+      },
+      {
+        "name": "Cool blue",
+        "props": {
+          "seed": 11,
+          "hueShift": 210
+        }
+      },
+      {
+        "name": "Bloom",
+        "props": {
+          "seed": 7,
+          "hueShift": 330,
+          "flash": true
+        }
+      }
+    ],
+    "stillAt": 0.45
+  }
+]

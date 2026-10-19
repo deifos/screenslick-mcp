@@ -6,12 +6,12 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
-import { AGENT_FRAMES_DIR, getConfig, WS_PATH } from "./config.js";
+import { AGENT_FRAMES_DIR, getConfig, PACKAGE_VERSION, WS_PATH } from "./config.js";
 import { debugLog } from "./log.js";
 
 type JsonObject = Record<string, unknown>;
@@ -108,6 +108,35 @@ interface PendingEditorRequest {
   timer: NodeJS.Timeout;
 }
 
+/**
+ * Optional extension installed by `screenslick-studio`. When present, this
+ * process owns the bridge and also serves Motion Studio: origin checks,
+ * studio HTTP routes, page → helper requests and helper-local tool calls.
+ */
+export interface BridgeExtension {
+  isOriginAllowed(origin: string | undefined): boolean;
+  handleHttp(request: IncomingMessage, response: ServerResponse): Promise<boolean>;
+  handlePageRequest(method: string, params: unknown): Promise<unknown>;
+  /** Return undefined when the method is not handled locally. */
+  handleLocalCall(method: string, params: unknown): Promise<unknown> | undefined;
+  onEditorChange?(connected: boolean, session: unknown): void;
+}
+
+let extension: BridgeExtension | null = null;
+
+export function setBridgeExtension(next: BridgeExtension | null) {
+  extension = next;
+}
+
+/** Push a message to the connected page (no-op when none). */
+export function sendToEditor(payload: unknown) {
+  if (activeEditor && !activeEditor.closed) activeEditor.sendJson(payload);
+}
+
+export function getEditorSession() {
+  return activeEditor && !activeEditor.closed ? editorSession : null;
+}
+
 let serverPromise: Promise<Server> | null = null;
 let activeEditor: WebSocketConnection | null = null;
 let editorSession: unknown = null;
@@ -116,11 +145,18 @@ const pendingEditorRequests = new Map<string, PendingEditorRequest>();
 
 function isLocalRequest(request: IncomingMessage) {
   const address = request.socket.remoteAddress;
+  const { host, port } = getConfig();
+  const authority = request.headers.host?.toLowerCase();
+  if (authority !== `${host}:${port}` && authority !== `localhost:${port}`) return false;
   return (
     address === "127.0.0.1" ||
     address === "::1" ||
     address === "::ffff:127.0.0.1"
   );
+}
+
+function headerValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function createAcceptKey(key: string) {
@@ -161,13 +197,13 @@ function persistSingleAgentFrameResult(result: unknown) {
   if (!match) return result;
 
   const mimeType = match[1] || String(frame.mimeType ?? "image/png");
-  const extension = mimeType.includes("jpeg")
+  const fileExtension = mimeType.includes("jpeg")
     ? "jpg"
     : mimeType.includes("webp")
       ? "webp"
       : "png";
   const directory = resolveFramesDir();
-  const filename = `screenslick-frame-${Date.now()}-${randomUUID()}.${extension}`;
+  const filename = `screenslick-frame-${Date.now()}-${randomUUID()}.${fileExtension}`;
   const filePath = join(directory, filename);
   const bytes = Buffer.from(match[2], "base64");
   writeFileSync(filePath, bytes);
@@ -233,20 +269,31 @@ class WebSocketConnection {
     this.sendText(JSON.stringify(value));
   }
 
-  close() {
+  /**
+   * Close the page connection. With a code the page gets a proper close frame, so it can tell
+   * "another tab took over" (4000) from "the bridge moved to Motion Studio, reconnect" (4001).
+   */
+  close(code?: number) {
     if (this.closed) return;
     this.closed = true;
-    debugLog("editor disconnected");
+    debugLog(`editor disconnected${code ? ` (${code})` : ""}`);
     if (activeEditor === this) {
       activeEditor = null;
       editorSession = null;
+      extension?.onEditorChange?.(false, null);
       for (const [id, pending] of pendingEditorRequests) {
         clearTimeout(pending.timer);
         pending.reject(new Error("ScreenSlick editor disconnected."));
         pendingEditorRequests.delete(id);
       }
     }
-    this.socket.destroy();
+    if (code) {
+      const frame = Buffer.from([0x88, 2, (code >> 8) & 0xff, code & 0xff]);
+      this.socket.end(frame);
+      setTimeout(() => this.socket.destroy(), 1000).unref();
+    } else {
+      this.socket.destroy();
+    }
   }
 
   private sendText(text: string) {
@@ -362,6 +409,35 @@ class WebSocketConnection {
     }
   }
 
+  private async handleStudioRequest(message: JsonObject) {
+    const id = message.id;
+    if (typeof id !== "string") return;
+    if (!extension) {
+      this.sendJson({
+        type: "studio.response",
+        id,
+        error: { message: "Motion Studio is not running. Start it with: npx -y screenslick-mcp studio" },
+      });
+      return;
+    }
+    try {
+      const result = await extension.handlePageRequest(
+        String(message.method ?? ""),
+        message.params ?? {},
+      );
+      this.sendJson({ type: "studio.response", id, result });
+    } catch (error) {
+      this.sendJson({
+        type: "studio.response",
+        id,
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          code: (error as { code?: unknown })?.code,
+        },
+      });
+    }
+  }
+
   private sendPong(payload: Buffer) {
     if (this.closed) return;
     // Control frame payloads are capped at 125 bytes; echo what fits.
@@ -385,6 +461,16 @@ class WebSocketConnection {
     ) {
       editorSession = (message as JsonObject).session;
       debugLog(`editor hello ${JSON.stringify(editorSession)}`);
+      extension?.onEditorChange?.(true, editorSession);
+      return;
+    }
+
+    if (
+      message &&
+      typeof message === "object" &&
+      (message as JsonObject).type === "studio.request"
+    ) {
+      void this.handleStudioRequest(message as JsonObject);
       return;
     }
 
@@ -408,10 +494,23 @@ class WebSocketConnection {
   }
 }
 
+/** Page close codes (see WebSocketConnection.close). */
+export const CLOSE_REPLACED = 4000;
+export const CLOSE_HANDOFF = 4001;
+
+/**
+ * After this process hands the port to Motion Studio it must not grab it straight back while
+ * the studio is still binding. Until then calls go to whoever owns the port.
+ */
+let handedOffUntil = 0;
+
 export function getBridgeStatus() {
   const { port } = getConfig();
   return {
     ok: true,
+    /** Motion Studio's helper owns this bridge (it can't hand the port over). */
+    studio: Boolean(extension),
+    version: PACKAGE_VERSION,
     connected: Boolean(activeEditor && !activeEditor.closed),
     port,
     path: WS_PATH,
@@ -428,26 +527,47 @@ async function fetchBridgeStatus() {
   return response.json();
 }
 
-async function callExternalBridge(
-  method: string,
-  params: unknown,
-  timeoutMs: number,
-) {
-  const { bridgeBaseUrl } = getConfig();
-  const response = await fetch(`${bridgeBaseUrl}/call`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method, params }),
-    signal: AbortSignal.timeout(timeoutMs),
+/**
+ * POST /call on the bridge another process owns. Uses node:http rather than fetch: fetch (undici) gives
+ * up waiting for response headers after 300 s, and exports or long captures can take longer.
+ */
+function callExternalBridge(method: string, params: unknown, timeoutMs: number) {
+  const { host, port } = getConfig();
+  const payload = JSON.stringify({ method, params, timeoutMs });
+  return new Promise<unknown>((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host,
+        port,
+        path: "/call",
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          clearTimeout(timer);
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { result?: unknown; error?: string };
+            if ((res.statusCode ?? 500) >= 400 || body.error) {
+              reject(new Error(body.error ?? `Bridge call failed: ${res.statusCode}`));
+            } else {
+              resolve(body.result);
+            }
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
+        });
+      },
+    );
+    const timer = setTimeout(() => req.destroy(new Error(`Bridge call "${method}" timed out.`)), timeoutMs + 5_000);
+    req.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    req.end(payload);
   });
-  const payload = (await response.json()) as {
-    result?: unknown;
-    error?: string;
-  };
-  if (!response.ok || payload.error) {
-    throw new Error(payload.error ?? `Bridge call failed: ${response.status}`);
-  }
-  return payload.result;
 }
 
 export async function callEditor(
@@ -456,6 +576,8 @@ export async function callEditor(
   options?: { timeoutMs?: number },
 ) {
   const timeoutMs = options?.timeoutMs ?? EDITOR_CALL_TIMEOUT_MS;
+  const local = extension?.handleLocalCall(method, params);
+  if (local) return local;
   await ensureBridge();
 
   if (!activeEditor || activeEditor.closed) {
@@ -486,6 +608,9 @@ export async function ensureBridge() {
     try {
       return await fetchBridgeStatus();
     } catch {}
+    if (Date.now() < handedOffUntil) {
+      throw new Error("The ScreenSlick bridge is moving to Motion Studio; try again in a moment.");
+    }
   }
 
   if (serverPromise) {
@@ -511,6 +636,54 @@ export async function ensureBridge() {
   return getBridgeStatus();
 }
 
+/**
+ * Start the bridge in this process and fail if the port is taken. Used by
+ * `screenslick-studio`, which must own the bridge.
+ */
+export async function startOwnedBridge() {
+  try {
+    return await tryStartBridge();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+  }
+  // Someone owns the port. Another Motion Studio can't be moved; a plain ScreenSlick MCP
+  // server (the editor tools inside a Claude session) hands it over and forwards from then on.
+  const { bridgeBaseUrl } = getConfig();
+  const owner = (await fetchBridgeStatus().catch(() => null)) as { studio?: boolean; version?: string } | null;
+  if (owner?.studio) throw new BridgeTakeoverError("studio_running");
+  const handoff = await fetch(`${bridgeBaseUrl}/handoff`, {
+    method: "POST",
+    signal: AbortSignal.timeout(BRIDGE_PROBE_TIMEOUT_MS),
+  }).catch(() => null);
+  if (!handoff?.ok) throw new BridgeTakeoverError(owner ? "old_mcp" : "unknown_owner");
+  const deadline = Date.now() + 8_000;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+      return await tryStartBridge();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || Date.now() > deadline) throw error;
+    }
+  }
+}
+
+export class BridgeTakeoverError extends Error {
+  constructor(readonly reason: "studio_running" | "old_mcp" | "unknown_owner") {
+    super(reason);
+    this.name = "BridgeTakeoverError";
+  }
+}
+
+async function tryStartBridge() {
+  if (!serverPromise) serverPromise = startBridgeServer();
+  try {
+    return await serverPromise;
+  } catch (error) {
+    serverPromise = null;
+    throw error;
+  }
+}
+
 async function startBridgeServer() {
   const { host, port } = getConfig();
   const server = createServer(async (request, response) => {
@@ -519,7 +692,27 @@ async function startBridgeServer() {
       return;
     }
 
+    if (extension && !extension.isOriginAllowed(headerValue(request.headers.origin))) {
+      sendJsonResponse(response, 403, { error: "Origin not allowed" });
+      return;
+    }
+
     try {
+      if (extension && (await extension.handleHttp(request, response))) return;
+
+      // Motion Studio's helper asks a plain MCP bridge for the port: close the page
+      // (it reconnects to the studio) and forward this process's calls from now on.
+      if (request.method === "POST" && request.url === "/handoff" && !extension) {
+        sendJsonResponse(response, 200, { ok: true });
+        handedOffUntil = Date.now() + 10_000;
+        serverPromise = null;
+        activeEditor?.close(CLOSE_HANDOFF);
+        server.close();
+        server.closeAllConnections?.();
+        debugLog("bridge handed off to Motion Studio");
+        return;
+      }
+
       if (request.method === "GET" && request.url === "/status") {
         sendJsonResponse(response, 200, getBridgeStatus());
         return;
@@ -528,8 +721,12 @@ async function startBridgeServer() {
       if (request.method === "POST" && request.url === "/call") {
         const body = await readJsonBody(request);
         const method = String(body.method ?? "");
+        const timeoutMs =
+          typeof body.timeoutMs === "number" && body.timeoutMs > 0
+            ? Math.min(body.timeoutMs, 2 * 60 * 60 * 1000)
+            : undefined;
         const result = persistAgentFrameResult(
-          await callEditor(method, body.params),
+          await callEditor(method, body.params, { timeoutMs }),
         );
         sendJsonResponse(response, 200, { result });
         return;
@@ -550,7 +747,8 @@ async function startBridgeServer() {
     if (
       request.url !== WS_PATH ||
       !isLocalRequest(request) ||
-      request.headers.upgrade?.toLowerCase() !== "websocket"
+      request.headers.upgrade?.toLowerCase() !== "websocket" ||
+      (extension && !extension.isOriginAllowed(headerValue(request.headers.origin)))
     ) {
       socket.destroy();
       return;
@@ -574,7 +772,7 @@ async function startBridgeServer() {
 
     if (head.length > 0) socket.unshift(head);
 
-    activeEditor?.close();
+    activeEditor?.close(CLOSE_REPLACED);
     activeEditor = new WebSocketConnection(socket);
     debugLog("editor connected");
   });
