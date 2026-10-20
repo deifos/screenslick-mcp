@@ -15,19 +15,22 @@ call `screenslick_bridge_status`.
 ## Motion Studio (`npx -y screenslick-mcp studio`)
 
 The same package ships the local half of **Motion Studio** (ScreenSlick → Motion Studio, `/studio`):
-Claude Code builds Remotion videos on your computer while you watch the live preview and edit every layer
-on the timeline in the browser.
+a coding agent (Claude Code or Codex) builds Remotion videos on your computer while you watch the live
+preview and edit every layer on the timeline in the browser.
 
 ```bash
 npx -y screenslick-mcp studio              # workspace in ~/ScreenSlick Studio
 npx -y screenslick-mcp studio --dir D:\videos --no-bash
-npx -y screenslick-mcp studio --add-dir path/to/your-app   # let Claude read your app's code (remembered)
+npx -y screenslick-mcp studio --add-dir path/to/your-app   # let the agent read your app's code (remembered)
+npx -y screenslick-mcp studio --agent codex   # start the chat with Codex (switch any time in the chat)
 ```
 
-It needs Claude Code installed and logged in (`claude`). The command:
+It needs Claude Code (`claude`) or Codex (`codex`) installed and logged in. With both, the first one found
+is the default and the chat header switches between them. The command:
 
 - creates or refreshes the workspace: `projects/<slug>/` (project.json, layers.json, scenes/*.tsx, assets/,
-  renders/), the `screenslick-video-studio` skill in `.claude/skills/`, and the shared runtime in
+  renders/), the `screenslick-video-studio` skill (in `.claude/skills/` and `.agents/skills/`), `CLAUDE.md` and
+  `AGENTS.md`, and the shared runtime in
   `.screenslick/` (managed files are rewritten on every start; projects are never touched);
 - owns the bridge on `127.0.0.1:32117`. If a ScreenSlick MCP server (the editor tools in a Claude session)
   already holds the port, the helper asks it to hand the port over (`POST /handoff`); that server then
@@ -35,18 +38,23 @@ It needs Claude Code installed and logged in (`claude`). The command:
   can't hand over: restart that Claude session once;
 - bundles each open project with esbuild and hot-reloads the page when files change;
 - serves project files to the page (range requests) and saves uploads and exports into the project;
-- runs `claude -p` (stream-json, resumed per project) for the chat panel, with the `screenslick_studio_*`
+- runs the agent headless for the chat panel (`claude -p` stream-json or `codex exec --json`, resumed per
+  project; switching agents passes a recap of the chat to the new one), with the `screenslick_studio_*`
   MCP tools: status, create/open project, capture frames, contact sheet, media info, transcribe, analyze
   audio, listen (measure, rank, tags, realness, critique), voice-overs, music (Lyria and the ScreenSlick
   library), export, focus. Folders added with `--add-dir` are readable; Claude's edit tools are blocked
-  there (`--disallowedTools Edit(...)`);
+  there (`--disallowedTools Edit(...)`) and Codex's sandbox only writes inside the workspace;
 - keeps voice/music provider keys in `~/.screenslick/studio-keys.json` (mode 600, outside the workspace)
-  and strips them from Claude's environment;
+  and strips them from the agent's environment;
 - renders locally with Remotion as a fallback (`npm install` in the workspace on first use).
 
 Only these web origins can use it: `https://screenslick.com`, `https://www.screenslick.com` and
 `http://localhost:3005` (add more with `--origin <url>` or `SCREENSLICK_STUDIO_ORIGINS`). Requests from any
-other website are refused. Claude may run shell commands in the workspace unless you pass `--no-bash`.
+other website are refused. The agent may run shell commands in the workspace unless you pass `--no-bash` (Codex always has a sandboxed
+shell; `--no-bash` turns off its network access instead).
+
+Each agent is one adapter in `src/studio/agents/` (how to start the CLI for a turn, how to read its output).
+To add one, write an adapter next to `claude.ts` / `codex.ts` and list it in `agents/index.ts`.
 
 Update the bundled skill from the ScreenSlick repo with `npm run sync:skill`.
 

@@ -7,9 +7,10 @@ description: Use for every change in a Motion Studio workspace (ScreenSlick /stu
 
 You build videos **live, in front of the user**. They watch the ScreenSlick studio page: chat on the
 left, a live Remotion preview, and a timeline where every layer you add appears as a clip they can
-drag, trim, retime or delete. Hand edits write back to the same files you edit. Every message starts
+drag, trim, retime or delete. Hand edits write back to the same files you edit. Every message comes
 with a `<studio-context>` block: the active project, the variant on screen, the playhead, the selected
-clips and any attached frame (open attached images with Read).
+clips and any attached frame (open attached images with your image viewer: `Read` in Claude Code,
+`view_image` in Codex). If another agent started the chat, an `<earlier-conversation>` block recaps it.
 
 ## The project (read `references/format.md` before your first edit)
 
@@ -92,6 +93,15 @@ Projects with a **Footage** track came from the editor's "Send to Motion Studio"
 user's real edit: cut silences with `trimStart` pieces, grade it with `grade`, restyle the captions, add
 motion graphics above it. Never re-encode or replace the file.
 
+Projects with **Screen** and **Camera** tracks are *raw takes*: the untouched recordings, nothing cut or
+styled. You do the whole edit: cut both tracks together, keep the camera in sync, frame the screen
+(zooms, layouts). Read the "Raw takes" section of `references/footage.md` before the first edit.
+
+Screen recordings from ScreenSlick Companion come with a `<video>.cursor.json` (mouse path, clicks,
+scrolls). Check `screenslick_studio_media_info` on the video for its summary and read
+`references/cursor.md`: zoom on the busiest clicks, cut idle stretches, speed up typing, and keep the
+clip's `cursor` field on every piece you cut.
+
 ## Working with the user
 
 The user edits the same timeline by hand while you work, and points at things instead of describing
@@ -105,7 +115,7 @@ keep their change.
 
 Never read, print or ask for API keys (they live outside the workspace; the helper uses them).
 Of the ScreenSlick MCP tools, use only the `screenslick_studio_*` ones here (the other `screenslick_*`
-tools belong to the video editor page and fail in the studio tab). Files, Bash and scripts are fine: run
+tools belong to the video editor page and fail in the studio tab). Files, the shell and scripts are fine: run
 scripts from the project folder (e.g. composing music or fetching CC0 sounds, see `references/sound.md`).
 
 | Tool | Use |
@@ -127,4 +137,4 @@ scripts from the project folder (e.g. composing music or fetching CC0 sounds, se
 | `screenslick_studio_focus` | show the user a frame or clip |
 
 Files you add for the video go in the project's `assets/` (copy them there; tools take
-`assets/<file>` or `library:<path>` paths). Never edit `.screenslick/` or `CLAUDE.md` (managed).
+`assets/<file>` or `library:<path>` paths). Never edit `.screenslick/`, `CLAUDE.md` or `AGENTS.md` (managed).

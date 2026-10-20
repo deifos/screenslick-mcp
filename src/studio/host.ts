@@ -6,7 +6,8 @@ import { PACKAGE_VERSION } from "../config.js";
 import { generateMusic, musicOptions, type GenerateMusicInput } from "./music.js";
 import { debugLog } from "../log.js";
 import { buildProjectBundle, buildRenderEntrySource, type BundleState } from "./bundler.js";
-import { ChatEngine, findClaude, type ClaudeInfo } from "./chat.js";
+import { detectAgents, getAgent, type AgentInfo } from "./agents/index.js";
+import { ChatEngine } from "./chat.js";
 import { handleStudioHttp } from "./http.js";
 import {
   assertSlug,
@@ -34,7 +35,7 @@ import {
   type GenerateVoiceInput,
   type VoiceProviderId,
 } from "./voice.js";
-import type { WorkspacePaths } from "./workspace.js";
+import { studioMcpServer, type WorkspacePaths } from "./workspace.js";
 
 export const DEFAULT_ALLOWED_ORIGINS = [
   "https://screenslick.com",
@@ -48,8 +49,10 @@ export interface StudioHostOptions {
   port: number;
   allowedOrigins: string[];
   allowBash: boolean;
-  /** Extra folders Claude may read (the app's repo, a media folder). */
+  /** Extra folders the agent may read (the app's repo, a media folder). */
   addDirs?: string[];
+  /** Agent used when the page doesn't pick one (an id from ./agents); else the first one installed. */
+  agent?: string;
 }
 
 interface PageSession {
@@ -72,7 +75,7 @@ export class StudioHost implements BridgeExtension {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private watcher: FSWatcher | null = null;
   private libraryWatcher: FSWatcher | null = null;
-  private claude: ClaudeInfo | null = null;
+  private agents: Promise<AgentInfo[]> | null = null;
   private pageSession: PageSession | null = null;
   readonly chat: ChatEngine;
 
@@ -83,7 +86,9 @@ export class StudioHost implements BridgeExtension {
       paths: this.paths,
       allowBash: options.allowBash,
       emit: (event, data) => this.emit(event, data),
-      getClaude: () => this.getClaude(),
+      getAgents: () => this.getAgents(),
+      defaultAgent: () => this.defaultAgent(),
+      mcp: studioMcpServer(this.paths),
       getPageContext: () => this.pageSession,
       addDirs: options.addDirs ?? [],
     });
@@ -111,18 +116,27 @@ export class StudioHost implements BridgeExtension {
 
   /**
    * "Send to Motion Studio" from the editor: a project sized to the footage, with the
-   * video on its own track and the editor's subtitles as an editable captions clip.
-   * The page uploads the video to the returned path right after.
+   * editor's subtitles as an editable captions clip. Two modes:
+   * - edited (default): the rendered edit on one Footage track.
+   * - raw: the untouched recordings, screen takes back to back on a Screen track and the
+   *   camera as a picture-in-picture clip on a Camera track, so the agent does the editing.
+   * The page uploads the files to the returned paths right after.
    */
   importFootage(input: Record<string, unknown>) {
     const num = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback);
+    const frames = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0);
+    const extension = (value: unknown) => (typeof value === "string" && /^[a-z0-9]{2,4}$/.test(value) ? value : "mp4");
+    const raw = input.mode === "raw";
+    const screens = raw ? (Array.isArray(input.screens) ? input.screens : []).map((s) => asRecord(s)) : [];
+    if (raw && !screens.length) throw new StudioError("No screen recording to import.", "bad_input");
     const width = Math.round(num(input.width, 1920) / 2) * 2;
     const height = Math.round(num(input.height, 1080) / 2) * 2;
     const fps = Math.round(num(input.fps, 30));
     const durationInFrames = Math.max(1, Math.round(num(input.durationInFrames, fps * 10)));
     const vertical = height > width;
     const variant = vertical ? "mobile" : "wide";
-    const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 80) : "Footage from the editor";
+    const fallbackName = raw ? "Raw takes from the editor" : "Footage from the editor";
+    const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 80) : fallbackName;
     const { slug } = createProject(this.paths, {
       name,
       fps,
@@ -131,8 +145,6 @@ export class StudioHost implements BridgeExtension {
       defaultVariant: variant,
       background: "#000000",
     });
-    const ext = typeof input.extension === "string" && /^[a-z0-9]{2,4}$/.test(input.extension) ? input.extension : "mp4";
-    const videoPath = `assets/footage.${ext}`;
     const words = (Array.isArray(input.words) ? input.words : [])
       .map((w) => asRecord(w))
       .filter((w) => typeof w.text === "string" && typeof w.from === "number" && typeof w.to === "number")
@@ -142,6 +154,11 @@ export class StudioHost implements BridgeExtension {
         to: Math.max(Math.round(Number(w.from)) + 1, Math.round(Number(w.to))),
       }))
       .filter((w) => w.from < durationInFrames);
+    // Clamp a clip to the project: starts inside it, at least one frame long.
+    const span = (from: unknown, duration: unknown) => {
+      const start = Math.min(frames(from), durationInFrames - 1);
+      return { from: start, duration: Math.max(1, Math.min(frames(duration) || durationInFrames, durationInFrames - start)) };
+    };
     const tracks: unknown[] = [];
     if (words.length) {
       tracks.push({
@@ -151,22 +168,115 @@ export class StudioHost implements BridgeExtension {
         clips: [{ id: "captions", name: "Subtitles from the editor", from: 0, duration: durationInFrames, words }],
       });
     }
-    tracks.push({
-      id: "footage",
-      name: "Footage",
-      kind: "video",
-      clips: [{ id: "footage", name: "Footage", from: 0, duration: durationInFrames, src: videoPath, fit: "contain" }],
-    });
+    const seconds = (durationInFrames / fps).toFixed(1);
+    // Companion recordings come with `<video>.cursor.json` (uploaded by the page next to the video).
+    const cursorPathFor = (videoPath: string) => videoPath.replace(/\.[^./]+$/, "") + ".cursor.json";
+    const clickCount = (value: unknown) => frames(asRecord(value).clicks);
+    const captionsNote = words.length ? `\n- Subtitles: ${words.length} words on the Captions track (word timings in frames)` : "";
+    let notes: string;
+    let paths: { videoPath?: string; screenPaths?: string[]; cameraPath?: string };
+
+    if (raw) {
+      const screenPaths = screens.map((s, i) => `assets/screen${screens.length > 1 ? `-${i + 1}` : ""}.${extension(s.extension)}`);
+      const camera = input.camera ? asRecord(input.camera) : null;
+      const cameraPath = camera ? `assets/camera.${extension(camera.extension)}` : undefined;
+      if (camera && cameraPath) {
+        const box = asRecord(camera.box);
+        const unit = (value: unknown, fallback: number) =>
+          typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
+        const radius = frames(camera.radius);
+        const trimStart = frames(camera.trimStart);
+        tracks.push({
+          id: "camera",
+          name: "Camera",
+          kind: "video",
+          clips: [
+            {
+              id: "camera",
+              name: "Camera",
+              ...span(camera.from, camera.duration),
+              src: cameraPath,
+              ...(trimStart ? { trimStart } : {}),
+              fit: "cover",
+              box: {
+                x: unit(box.x, 0.8),
+                y: unit(box.y, 0.75),
+                width: Math.max(0.01, unit(box.width, 0.15)),
+                height: Math.max(0.01, unit(box.height, 0.2)),
+              },
+              ...(radius ? { radius } : {}),
+              muted: true,
+            },
+          ],
+        });
+      }
+      tracks.push({
+        id: "screen",
+        name: "Screen",
+        kind: "video",
+        clips: screens.map((s, i) => {
+          const cursor = s.cursor ? asRecord(s.cursor) : null;
+          return {
+            id: `screen-${i + 1}`,
+            name: screens.length > 1 ? `Screen take ${i + 1}` : "Screen",
+            ...span(s.from, s.duration),
+            src: screenPaths[i],
+            fit: "contain",
+            // The recording has no pointer of its own: draw the recorded one. Otherwise keep
+            // the data linked (style hidden) so click effects are one switch away.
+            ...(cursor
+              ? {
+                  cursor:
+                    cursor.cursorInVideo === false
+                      ? { src: cursorPathFor(screenPaths[i]), style: "classic", clicks: true }
+                      : { src: cursorPathFor(screenPaths[i]), style: "hidden", clicks: false },
+                }
+              : {}),
+          };
+        }),
+      });
+      const cursorTakes = screens.flatMap((s, i) => (s.cursor ? [{ path: cursorPathFor(screenPaths[i]), cursor: asRecord(s.cursor) }] : []));
+      notes =
+        `# ${name}\n\nRaw takes sent from the ScreenSlick editor: nothing cut, zoomed or styled yet (${width}×${height}, ${seconds} s).\n` +
+        `- Screen: ${screenPaths.join(", ")} on the Screen track (back to back). Its audio is the user's voice.\n` +
+        (cameraPath
+          ? `- Camera: ${cameraPath} on the Camera track, a picture-in-picture box where the editor had it. Muted: the voice is on the screen recording.${camera?.mirrored ? " The user had it mirrored in the editor." : ""}\n`
+          : "") +
+        (words.length ? `- Subtitles: ${words.length} words on the Captions track, timed to the raw recording (word timings in frames)\n` : "") +
+        cursorTakes
+          .map(
+            ({ path, cursor }) =>
+              `- Cursor: ${path} (${clickCount(cursor)} clicks). ${
+                cursor.cursorInVideo === false
+                  ? "The recording has no pointer: the Screen clip draws this one (its \`cursor\` field)."
+                  : "The recording shows its own pointer; the Screen clip links the data with style hidden."
+              } See references/cursor.md.\n`,
+          )
+          .join("");
+      paths = { screenPaths, cameraPath };
+    } else {
+      const videoPath = `assets/footage.${extension(input.extension)}`;
+      tracks.push({
+        id: "footage",
+        name: "Footage",
+        kind: "video",
+        clips: [{ id: "footage", name: "Footage", from: 0, duration: durationInFrames, src: videoPath, fit: "contain" }],
+      });
+      notes =
+        `# ${name}\n\nFootage sent from the ScreenSlick editor (the edit as it was exported: ${width}×${height}, ${seconds} s).\n` +
+        `- Video: ${videoPath} on the Footage track${captionsNote}\n` +
+        (input.cursor
+          ? `- Clicks: ${cursorPathFor(videoPath)} (${clickCount(input.cursor)} clicks, timed to this edit; positions are on the original screen, not the edited frame). See references/cursor.md.\n`
+          : "");
+      paths = { videoPath };
+    }
+
     const dir = projectDir(this.paths, slug);
     writeFileSync(join(dir, "layers.json"), `${JSON.stringify({ version: 1, tracks, markers: [] }, null, 2)}\n`);
-    writeFileSync(
-      join(dir, "notes.md"),
-      `# ${name}\n\nFootage sent from the ScreenSlick editor (the edit as it was exported: ${width}×${height}, ${(durationInFrames / fps).toFixed(1)} s).\n` +
-        `- Video: ${videoPath} on the Footage track${words.length ? `\n- Subtitles: ${words.length} words on the Captions track (word timings in frames)` : ""}\n`,
-    );
+    writeFileSync(join(dir, "notes.md"), notes);
     this.emit("studio.projects", { projects: listProjects(this.paths) });
-    debugLog(`import: created ${slug} (${width}x${height}, ${durationInFrames}f, ${words.length} words)`);
-    return { slug, videoPath };
+    debugLog(`import: created ${slug} (${raw ? "raw" : "edited"}, ${width}x${height}, ${durationInFrames}f, ${words.length} words)`);
+    return { slug, ...paths };
   }
 
   onEditorChange(connected: boolean, session: unknown) {
@@ -211,7 +321,7 @@ export class StudioHost implements BridgeExtension {
           library: listLibrary(this.paths),
         };
       case "studio.chat.send":
-        return this.chat.send(assertSlug(p.slug), String(p.text ?? ""), asRecord(p.context));
+        return this.chat.send(assertSlug(p.slug), String(p.text ?? ""), asRecord(p.context), p.agent);
       case "studio.chat.cancel":
         return this.chat.cancel(assertSlug(p.slug));
       case "studio.chat.queue.edit":
@@ -326,7 +436,7 @@ export class StudioHost implements BridgeExtension {
         this.debounce("library", () => this.emit("studio.library", {}), 200);
       });
     } catch {}
-    void this.getClaude();
+    void this.getAgents();
   }
 
   stop() {
@@ -339,9 +449,17 @@ export class StudioHost implements BridgeExtension {
     sendToEditor({ type: "studio.event", event, data });
   }
 
-  async getClaude() {
-    if (!this.claude) this.claude = await findClaude();
-    return this.claude;
+  /** Every agent and whether it's installed (looked up once per helper run). */
+  getAgents() {
+    this.agents ??= Promise.resolve().then(detectAgents);
+    return this.agents;
+  }
+
+  async defaultAgent() {
+    const agents = await this.getAgents();
+    const wanted = this.options.agent;
+    if (wanted && getAgent(wanted)) return wanted;
+    return (agents.find((agent) => agent.found) ?? agents[0])?.id ?? null;
   }
 
   private debounce(key: string, run: () => void, ms: number) {
@@ -513,11 +631,15 @@ export class StudioHost implements BridgeExtension {
   }
 
   private async info() {
-    const claude = await this.getClaude();
+    const agents = await this.getAgents();
+    const claude = agents.find((agent) => agent.id === "claude");
     return {
       version: PACKAGE_VERSION,
       workspace: this.paths.root,
-      claude,
+      agents,
+      defaultAgent: await this.defaultAgent(),
+      // Pages from before agents were pluggable read this.
+      claude: claude ? { found: claude.found, path: claude.path, version: claude.version, error: claude.error } : null,
       allowBash: this.options.allowBash,
       projects: listProjects(this.paths),
       bridgePort: this.options.port,

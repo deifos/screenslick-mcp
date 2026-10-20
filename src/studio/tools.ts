@@ -134,7 +134,7 @@ export function registerStudioTools(server: McpServer) {
   defineTool(
     server,
     "screenslick_studio_media_info",
-    "Duration (seconds and frames at the project fps), size, sample rate and channels of project media files. Use it to set clip durations exactly.",
+    "Duration (seconds and frames at the project fps), size, sample rate and channels of project media files. Use it to set clip durations exactly. For screen recordings with a <video>.cursor.json (ScreenSlick Companion), also returns a cursor summary: click count, the busiest stretches (where to zoom), idle stretches (cut candidates) and typing (speed-up candidates).",
     { paths: z.array(projectPath).min(1).max(40), project },
     async (args) => page("studio_media_info", args, 2 * MINUTE),
   );

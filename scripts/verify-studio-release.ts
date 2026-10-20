@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { setBridgeExtension, startOwnedBridge } from "../src/bridge.js";
 import { StudioHost, DEFAULT_ALLOWED_ORIGINS } from "../src/studio/host.js";
 import { projectDir, safeJoin } from "../src/studio/projects.js";
-import { scaffoldWorkspace } from "../src/studio/workspace.js";
+import { scaffoldWorkspace, studioMcpServer } from "../src/studio/workspace.js";
 import { buildProjectBundle } from "../src/studio/bundler.js";
 import { ChatEngine } from "../src/studio/chat.js";
 
@@ -88,7 +88,11 @@ try {
   let inFlight = 0;
   const chat = new ChatEngine({
     paths, allowBash: false, addDirs: [], getPageContext: () => null,
-    getClaude: async () => ({ found: true, path: process.execPath, version: "test" }),
+    getAgents: async () => [
+      { id: "claude", name: "Claude", product: "Claude Code", found: true, path: process.execPath, version: "test", installUrl: "", loginCommand: "claude" },
+    ],
+    defaultAgent: async () => "claude",
+    mcp: studioMcpServer(paths),
     emit: (_event, data) => {
       const kind = (data as { kind?: string }).kind;
       if (kind === "start") maxRunning = Math.max(maxRunning, ++inFlight);
@@ -104,7 +108,7 @@ try {
   assert.equal(maxRunning, 1);
   assert.equal(chat.runningSlug(), null);
   assert.equal(chat.queued().length, 0);
-  console.log("Studio release checks passed: import/upload, ranges, bundle, private paths, junctions, Host/Origin checks, custom-port MCP config, chat queue (one Claude at a time).");
+  console.log("Studio release checks passed: import/upload, ranges, bundle, private paths, junctions, Host/Origin checks, custom-port MCP config, chat queue (one agent at a time).");
   console.log(`Test workspace: ${root}`);
 } finally {
   host.stop();

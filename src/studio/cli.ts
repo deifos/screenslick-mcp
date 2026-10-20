@@ -3,6 +3,7 @@
 import { BridgeTakeoverError, setBridgeExtension, startOwnedBridge } from "../bridge.js";
 import { getConfig, PACKAGE_VERSION } from "../config.js";
 import { debugLog } from "../log.js";
+import { AGENTS, getAgent } from "./agents/index.js";
 import { DEFAULT_ALLOWED_ORIGINS, StudioHost } from "./host.js";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -14,6 +15,7 @@ interface CliOptions {
   origins: string[];
   addDirs: string[];
   removeDirs: string[];
+  agent: string | undefined;
   help: boolean;
   version: boolean;
 }
@@ -25,6 +27,7 @@ function parseArgs(argv: string[]): CliOptions {
     origins: [],
     addDirs: [],
     removeDirs: [],
+    agent: process.env.SCREENSLICK_STUDIO_AGENT || undefined,
     help: false,
     version: false,
   };
@@ -47,6 +50,8 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg.startsWith("--add-dir=")) options.addDirs.push(arg.slice(10));
     else if (arg === "--remove-dir") options.removeDirs.push(next());
     else if (arg.startsWith("--remove-dir=")) options.removeDirs.push(arg.slice(13));
+    else if (arg === "--agent") options.agent = next();
+    else if (arg.startsWith("--agent=")) options.agent = arg.slice(8);
     else if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--version" || arg === "-v") options.version = true;
     else throw new Error(`Unknown option ${arg}`);
@@ -56,27 +61,33 @@ function parseArgs(argv: string[]): CliOptions {
     .map((value) => value.trim())
     .filter(Boolean);
   options.origins = [...options.origins, ...fromEnv].map((origin) => origin.replace(/\/+$/, ""));
+  if (options.agent && !getAgent(options.agent)) {
+    throw new Error(`Unknown agent "${options.agent}". Choose one of: ${AGENTS.map((agent) => agent.id).join(", ")}`);
+  }
   return options;
 }
 
 const HELP = `Motion Studio (screenslick-mcp ${PACKAGE_VERSION})
 
 Runs the local side of Motion Studio: the bridge on 127.0.0.1:32117,
-your video workspace, live bundles for the preview, and Claude Code for chat.
+your video workspace, live bundles for the preview, and a coding agent for chat
+(${AGENTS.map((agent) => agent.product).join(" or ")}: whichever you have; switch in the chat).
 
 Usage: npx -y screenslick-mcp studio [options]
 
   --dir <path>      Workspace folder (default: ~/ScreenSlick Studio)
   --port <n>        Bridge port (default 32117)
   --origin <url>    Also allow this web origin (repeatable)
-  --add-dir <path>  Let Claude read another folder, e.g. your app's repo (its edit tools are blocked there;
+  --agent <id>      Agent the chat starts with: ${AGENTS.map((agent) => agent.id).join(", ")} (default: the first one installed)
+  --add-dir <path>  Let the agent read another folder, e.g. your app's repo (it may not change it;
                     remembered for the next runs)
   --remove-dir <p>  Forget a folder added with --add-dir
-  --no-bash         Don't let Claude run shell commands
+  --no-bash         Don't let the agent run shell commands (Codex always has a sandboxed shell:
+                    this turns off its network access instead)
   -h, --help        Show this help
 `;
 
-/** Folders Claude may read besides the workspace, kept in .screenslick/settings.json. */
+/** Folders the agent may read besides the workspace, kept in .screenslick/settings.json. */
 function resolveReadFolders(paths: WorkspacePaths, add: string[], remove: string[]) {
   const file = join(paths.internal, "settings.json");
   let settings: Record<string, unknown> = {};
@@ -119,6 +130,7 @@ async function main() {
     port,
     allowBash: options.allowBash,
     addDirs: readFolders,
+    agent: options.agent,
     allowedOrigins: [...DEFAULT_ALLOWED_ORIGINS, ...options.origins],
   });
   setBridgeExtension(host);
@@ -143,7 +155,8 @@ async function main() {
     throw error;
   }
   host.start();
-  const claude = await host.getClaude();
+  const agents = await host.getAgents();
+  const defaultAgent = await host.defaultAgent();
 
   const lines = [
     "",
@@ -151,8 +164,18 @@ async function main() {
     "",
     `  Workspace   ${paths.root}${created ? "  (new)" : ""}`,
     `  Bridge      http://127.0.0.1:${port}`,
-    `  Claude Code ${claude.found ? `found (${claude.version ?? "unknown version"})` : "NOT FOUND — install from https://claude.com/claude-code and log in"}`,
-    `  Shell tools ${options.allowBash ? "allowed for Claude" : "off (--no-bash)"}`,
+    ...agents.map(
+      (agent) =>
+        `  ${agent.product.padEnd(11)} ${
+          agent.found
+            ? `found (${agent.version ?? "unknown version"})${agent.id === defaultAgent ? ", default" : ""}`
+            : `not found (install from ${agent.installUrl} and log in)`
+        }`,
+    ),
+    ...(agents.some((agent) => agent.found)
+      ? []
+      : ["  No coding agent found: install one of the above, log in once, then start Motion Studio again."]),
+    `  Shell tools ${options.allowBash ? "allowed for the agent" : "off (--no-bash)"}`,
     `  Extra folders ${readFolders.length ? readFolders.join(", ") : "none configured (add a folder with --add-dir <path>)"}`,
     "",
     "  Open https://screenslick.com/studio in Chrome.",

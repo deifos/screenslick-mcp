@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfig, PACKAGE_VERSION } from "../config.js";
+import { AGENTS, type McpServerSpec } from "./agents/index.js";
 
 export const REMOTION_VERSION = "4.0.536";
 export const REACT_VERSION = "19.2.8";
@@ -27,8 +28,9 @@ export interface WorkspacePaths {
   runtime: string;
   render: string;
   mcpConfig: string;
-  skill: string;
 }
+
+export const SKILL_NAME = "screenslick-video-studio";
 
 export function defaultWorkspaceDir() {
   return join(homedir(), "ScreenSlick Studio");
@@ -44,7 +46,19 @@ export function workspacePaths(root: string): WorkspacePaths {
     runtime: join(absolute, ".screenslick", "runtime"),
     render: join(absolute, ".screenslick", "render"),
     mcpConfig: join(absolute, ".screenslick", "mcp.json"),
-    skill: join(absolute, ".claude", "skills", "screenslick-video-studio"),
+  };
+}
+
+/** The screenslick MCP server every agent in the workspace connects to. */
+export function studioMcpServer(paths: WorkspacePaths): McpServerSpec {
+  return {
+    name: "screenslick",
+    command: process.execPath,
+    args: [MCP_ENTRY],
+    env: {
+      SCREENSLICK_STUDIO_WORKSPACE: paths.root,
+      SCREEN_SLICK_AGENT_PORT: String(getConfig().port),
+    },
   };
 }
 
@@ -160,32 +174,25 @@ export function scaffoldWorkspace(root: string): ScaffoldResult {
   }
 
   copyDir(join(TEMPLATE_DIR, "runtime"), paths.runtime);
-  // The component library: Claude reads it (and the catalog), local renders import it.
+  // The component library: the agent reads it (and the catalog), local renders import it.
   if (existsSync(join(TEMPLATE_DIR, "components"))) {
     copyDir(join(TEMPLATE_DIR, "components"), join(paths.root, ".screenslick", "components"));
   }
-  copyDir(join(TEMPLATE_DIR, "skill"), paths.skill);
-  writeIfChanged(join(paths.root, "CLAUDE.md"), readFileSync(join(TEMPLATE_DIR, "CLAUDE.md"), "utf8"));
+  // Each agent reads its own instructions file and finds skills in its own folder.
+  const instructions = readFileSync(join(TEMPLATE_DIR, "AGENTS.md"), "utf8");
+  for (const dir of new Set(AGENTS.map((agent) => agent.skillsDir))) {
+    copyDir(join(TEMPLATE_DIR, "skill"), join(paths.root, dir, SKILL_NAME));
+  }
+  for (const agent of AGENTS) {
+    const skillPath = `${agent.skillsDir}/${SKILL_NAME}/SKILL.md`;
+    writeIfChanged(join(paths.root, agent.instructionsFile), instructions.replaceAll("{{SKILL_PATH}}", skillPath));
+  }
   writeIfChanged(join(paths.root, "tsconfig.json"), `${JSON.stringify(TSCONFIG, null, 2)}\n`);
   ensurePackageJson(paths.root);
+  const mcp = studioMcpServer(paths);
   writeIfChanged(
     paths.mcpConfig,
-    `${JSON.stringify(
-      {
-        mcpServers: {
-          screenslick: {
-            command: process.execPath,
-            args: [MCP_ENTRY],
-            env: {
-              SCREENSLICK_STUDIO_WORKSPACE: paths.root,
-              SCREEN_SLICK_AGENT_PORT: String(getConfig().port),
-            },
-          },
-        },
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, 2)}\n`,
   );
   writeIfChanged(join(paths.internal, "VERSION"), `${PACKAGE_VERSION}\n`);
   writeIfChanged(

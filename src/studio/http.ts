@@ -42,7 +42,7 @@ export interface StudioHttpDeps {
   ensureBundle(slug: string): Promise<void>;
   onUploaded(slug: string, relPath: string): void;
   /** Create a project around footage sent from the ScreenSlick editor. */
-  importFootage(input: Record<string, unknown>): { slug: string; videoPath: string };
+  importFootage(input: Record<string, unknown>): { slug: string; videoPath?: string; screenPaths?: string[]; cameraPath?: string };
 }
 
 export function corsHeaders(origin: string | undefined): Record<string, string> {

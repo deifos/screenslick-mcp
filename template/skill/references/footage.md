@@ -36,4 +36,38 @@ muted look. Check with `screenslick_studio_capture_frames` before and after.
 ## Motion graphics over footage
 
 Add tracks above Footage (text, scenes, images) and keep the footage readable: lower thirds and callouts
-at the edges, punch-in zooms by animating the footage `box`, never covering the speaker's face for long.
+at the edges, punch-in zooms by splitting the footage and giving that piece a bigger `box`, never covering
+the speaker's face for long.
+
+## Raw takes
+
+"Send to Motion Studio → Raw takes" sends the untouched recordings instead of a render. The project is
+sized to the screen recording:
+
+- **Screen** track: one clip per take (`screen`, or `screen-1`, `screen-2`, … back to back), `src:
+  "assets/screen.<ext>"`, `fit: "contain"`. Its audio is the user's voice: the only audio in the project.
+- **Camera** track (when they recorded one): clip `camera`, `src: "assets/camera.<ext>"`, `fit: "cover"`,
+  a `box` where the editor showed it and a `radius` for its rounded corners. It is `muted` (the voice is on
+  the screen file) and already synced: its `from`/`trimStart` line it up with the screen. Keep it muted.
+- **Captions** track (when the editor had subtitles): words timed to the raw recording.
+- **Cursor** (Companion recordings): `assets/screen.cursor.json` with the mouse path, clicks and scrolls,
+  and a `cursor` field on the screen clip that draws the pointer. Copy that field to every piece you cut.
+  See `references/cursor.md`; it also finds zoom, cut and speed-up candidates for step 1.
+- `notes.md` lists the files and whether the user had the camera mirrored.
+
+Nothing is cut yet, so a raw take is usually long. Ask what the video is for when it isn't clear, then:
+
+1. **Cut both tracks together.** Work out the kept ranges on the screen take (silences, retakes, "by
+   transcript" cuts, as above). For every range, add a screen piece *and* a camera piece with the same
+   `from` and `duration`. With the range start `R` in frames on the *original* timeline, the screen
+   piece's `trimStart` is `R` − its take's original `from`, and the camera piece's `trimStart` is
+   `R` − camera's original `from` + camera's original `trimStart` (skip camera pieces where that is
+   negative: the camera wasn't rolling yet). Ids: `screen-1…`, `camera-1…`. Move the captions with the cuts.
+   Spot-check sync after cutting with `screenslick_studio_capture_frames` (lips vs. the voice).
+2. **Frame the screen.** A `box` is fixed for the whole clip, so a zoom is a cut: split the screen piece
+   where the action starts and give that piece a bigger box (width/height 1.5–2, x/y negative to keep the
+   area of interest in frame), then cut back. Hold each zoom long enough to read.
+3. **Place the camera.** Bubble in a corner (keep `radius` at half the short side for a circle), full frame
+   for an intro or outro (camera `box` to the whole frame; the Camera track sits above Screen), or
+   side by side (shrink the screen `box`, give the camera the rest). Change layouts at cuts, not mid-sentence.
+4. Then grade, captions, music and motion graphics as for any footage.

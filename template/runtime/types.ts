@@ -99,7 +99,39 @@ export interface VideoClipFields {
   muted?: boolean;
   fit?: "cover" | "contain";
   box?: Box;
+  /** Corner radius in px (half the short side makes a circle). */
+  radius?: number;
   playbackRate?: number;
+  /** Draw the recorded mouse over this clip (Companion recordings). */
+  cursor?: VideoCursor;
+}
+
+export interface VideoCursor {
+  /** `<video>.cursor.json`: path, clicks and scrolls in frames of the video file. */
+  src: string;
+  /** "hidden" draws no pointer (the video already shows one) but keeps click effects. */
+  style?: "classic" | "accent" | "spotlight" | "hand" | "hidden";
+  /** Percent of the default size (50–200). */
+  size?: number;
+  /** Ring that spreads from each click. */
+  clicks?: boolean;
+  /** 0 follows the raw path, 1 glides. */
+  smoothing?: number;
+}
+
+/** Contents of a `<video>.cursor.json`. */
+export interface CursorTrack {
+  version: 1;
+  fps: number;
+  durationInFrames: number;
+  width?: number;
+  height?: number;
+  space: "video" | "source";
+  cursorInVideo: boolean;
+  path: [number, number | null, number | null][];
+  kinds: [number, string][];
+  clicks: { frame: number; x: number; y: number; button: string }[];
+  scrolls: { frame: number; x: number; y: number; dy: number }[];
 }
 
 export interface ImageClipFields {

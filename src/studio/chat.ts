@@ -2,46 +2,12 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { spawnSync } from "node:child_process";
 import { debugLog } from "../log.js";
+import { getAgent, type AgentAdapter, type AgentEvent, type AgentInfo, type AgentParser, type McpServerSpec } from "./agents/index.js";
 import { atomicWrite, projectDir, StudioError } from "./projects.js";
 import { VOICE_KEY_ENV_VARS } from "./voice.js";
-import { DETACH_FOR_GROUP_KILL, killTree, resolveCommand, spawnCommand } from "./proc.js";
+import { DETACH_FOR_GROUP_KILL, killTree, spawnCommand } from "./proc.js";
 import type { WorkspacePaths } from "./workspace.js";
-
-export interface ClaudeInfo {
-  found: boolean;
-  path: string | null;
-  version: string | null;
-  error?: string;
-}
-
-export async function findClaude(): Promise<ClaudeInfo> {
-  const override = process.env.SCREENSLICK_STUDIO_CLAUDE;
-  const path = override || resolveCommand("claude");
-  if (!path) {
-    return {
-      found: false,
-      path: null,
-      version: null,
-      error: "Claude Code (`claude`) is not on PATH. Install it from https://claude.com/claude-code and log in once.",
-    };
-  }
-  try {
-    const result = /\.(cmd|bat)$/i.test(path)
-      ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${path}" --version`], {
-          encoding: "utf8",
-          timeout: 15_000,
-          windowsHide: true,
-          windowsVerbatimArguments: true,
-        })
-      : spawnSync(path, ["--version"], { encoding: "utf8", timeout: 15_000, windowsHide: true });
-    const version = (result.stdout || "").trim().split(/\s+/)[0] || null;
-    return { found: result.status === 0, path, version, error: result.status === 0 ? undefined : (result.stderr || "").slice(0, 400) };
-  } catch (error) {
-    return { found: false, path, version: null, error: (error as Error).message };
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Chat history model (persisted to projects/<slug>/.studio/chat.json)
@@ -56,7 +22,7 @@ export type ChatPart =
       file?: string;
       status: "running" | "done" | "error";
       error?: string;
-      /** Pictures Claude looked at in this step (project-relative, served by /studio/files). */
+      /** Pictures the agent looked at in this step (project-relative, served by /studio/files). */
       images?: string[];
     };
 
@@ -64,6 +30,8 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   at: number;
+  /** assistant: the agent that wrote it (see ./agents). */
+  agent?: string;
   text?: string;
   parts?: ChatPart[];
   /** user messages: "queued" while waiting for the running turn; assistant: the turn state. */
@@ -84,20 +52,27 @@ export interface ChatReference {
 interface ChatFile {
   version: 1;
   sessionId: string | null;
+  /** The agent the session belongs to (chats from before agents were pluggable are Claude's). */
+  agent: string | null;
   messages: ChatMessage[];
 }
 
 const MAX_MESSAGES = 400;
+/** The agent of chats saved before the `agent` field existed. */
+const LEGACY_AGENT = "claude";
 
 interface Turn {
-  /** Project the turn belongs to; changes when Claude creates a project mid-turn. */
+  /** Project the turn belongs to; changes when the agent creates a project mid-turn. */
   slug: string;
+  agent: AgentAdapter;
+  parser: AgentParser;
   message: ChatMessage;
   child: ChildProcess;
+  startedAt: number;
   cancelled: boolean;
-  streamedMessageIds: Set<string>;
-  currentStreamMessageId: string | null;
   stderr: string;
+  /** The last problem the agent reported (shown if the turn ends without a result). */
+  lastError: string | null;
   gotResult: boolean;
   retriedWithoutResume: boolean;
 }
@@ -106,41 +81,23 @@ export interface ChatEngineDeps {
   paths: WorkspacePaths;
   allowBash: boolean;
   emit(event: string, data: unknown): void;
-  getClaude(): Promise<ClaudeInfo>;
+  /** Every agent with its install state (see ./agents). */
+  getAgents(): Promise<AgentInfo[]>;
+  /** The agent to use when the page doesn't pick one and the chat has none yet. */
+  defaultAgent(): Promise<string | null>;
+  /** The screenslick MCP server every agent connects to. */
+  mcp: McpServerSpec;
   getPageContext(): Record<string, unknown> | null;
-  /** Extra folders Claude may read and edit (claude --add-dir), e.g. the app's repo. */
+  /** Extra folders the agent may read, e.g. the app's repo. */
   addDirs: string[];
 }
 
-/**
- * A Claude Code permission path for a folder and everything in it: `//` anchors at the filesystem
- * root, and Windows paths are matched in POSIX form (C:\\code\\app → //c/code/app/**).
- */
-export function absoluteRule(dir: string) {
-  let path = dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const drive = /^([A-Za-z]):(\/|$)/.exec(path);
-  if (drive) path = `/${drive[1].toLowerCase()}${path.slice(2)}`;
-  return `/${path.startsWith("/") ? path : `/${path}`}/**`;
-}
-
-const BASE_TOOLS = [
-  "Read",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "Glob",
-  "Grep",
-  "TodoWrite",
-  "WebFetch",
-  "WebSearch",
-  "Skill",
-  "mcp__screenslick",
-];
+type ResolvedAgent = { adapter: AgentAdapter; info: AgentInfo; path: string; agents: AgentInfo[] };
 
 const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif)$/i;
-/** A frame the bridge saved for Claude (see persistAgentFrameResult). */
+/** A frame the bridge saved for the agent (see persistAgentFrameResult). */
 const SAVED_FRAME = /[\\/]screenslick-frame-[\w-]+\.(png|jpe?g|webp)$/i;
 
 /** Every saved-frame `filePath` in a tool result (text blocks hold JSON, sometimes JSON in JSON). */
@@ -171,17 +128,18 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-/** A message sent while Claude was busy. Its context is captured when it was sent. */
+/** A message sent while the agent was busy. Its context (and agent) is captured when it was sent. */
 interface QueuedMessage {
   slug: string;
   messageId: string;
   text: string;
-  contextText: string;
+  agentId: string;
+  context: Record<string, unknown>;
 }
 
 export class ChatEngine {
   private readonly turns = new Map<string, Turn>();
-  /** One Claude at a time: messages wait here and run in order when the current turn ends. */
+  /** One agent at a time: messages wait here and run in order when the current turn ends. */
   private readonly queue: QueuedMessage[] = [];
 
   constructor(private readonly deps: ChatEngineDeps) {}
@@ -192,10 +150,13 @@ export class ChatEngine {
 
   private load(slug: string): ChatFile {
     try {
-      const raw = JSON.parse(readFileSync(this.chatPath(slug), "utf8")) as ChatFile;
-      if (raw && Array.isArray(raw.messages)) return { version: 1, sessionId: raw.sessionId ?? null, messages: raw.messages };
+      const raw = JSON.parse(readFileSync(this.chatPath(slug), "utf8")) as Partial<ChatFile>;
+      if (raw && Array.isArray(raw.messages)) {
+        const sessionId = raw.sessionId ?? null;
+        return { version: 1, sessionId, agent: raw.agent ?? (sessionId ? LEGACY_AGENT : null), messages: raw.messages };
+      }
     } catch {}
-    return { version: 1, sessionId: null, messages: [] };
+    return { version: 1, sessionId: null, agent: null, messages: [] };
   }
 
   private save(slug: string, file: ChatFile) {
@@ -205,12 +166,19 @@ export class ChatEngine {
     atomicWrite(path, `${JSON.stringify(trimmed, null, 2)}\n`);
   }
 
-  private upsertMessage(slug: string, message: ChatMessage, sessionId?: string | null) {
+  private upsertMessage(slug: string, message: ChatMessage) {
     const file = this.load(slug);
     const index = file.messages.findIndex((m) => m.id === message.id);
     if (index >= 0) file.messages[index] = message;
     else file.messages.push(message);
-    if (sessionId !== undefined) file.sessionId = sessionId;
+    this.save(slug, file);
+  }
+
+  private saveSession(slug: string, agentId: string, sessionId: string | null) {
+    const file = this.load(slug);
+    if (file.sessionId === sessionId && file.agent === agentId) return;
+    file.sessionId = sessionId;
+    file.agent = agentId;
     this.save(slug, file);
   }
 
@@ -227,6 +195,7 @@ export class ChatEngine {
     if (stale) this.save(slug, file);
     return {
       sessionId: file.sessionId,
+      agent: file.agent,
       messages: file.messages,
       running: this.turns.has(slug) ? this.turns.get(slug)?.message.id : null,
     };
@@ -235,7 +204,7 @@ export class ChatEngine {
   reset(slug: string) {
     this.dropQueued(slug);
     this.cancel(slug);
-    this.save(slug, { version: 1, sessionId: null, messages: [] });
+    this.save(slug, { version: 1, sessionId: null, agent: null, messages: [] });
     this.deps.emit("studio.chat", { slug, kind: "reset" });
     return { ok: true };
   }
@@ -254,9 +223,9 @@ export class ChatEngine {
   }
 
   /**
-   * Claude created a new project from a chat in another one: the conversation moves with
+   * The agent created a new project from a chat in another one: the conversation moves with
    * it, so the new project's chat shows the work in progress and later messages resume
-   * the same Claude session there.
+   * the same session there.
    */
   moveRunningTurn(to: string) {
     const from = this.runningSlug();
@@ -270,6 +239,7 @@ export class ChatEngine {
     const turnMessages = source.messages.slice(Math.max(0, userIndex));
     target.messages = target.messages.length === 0 ? moving : [...target.messages, ...turnMessages];
     target.sessionId = source.sessionId;
+    target.agent = source.agent;
     this.save(to, target);
     // Leave a pointer in the old chat instead of the moved turn.
     source.messages = source.messages.filter((m) => !turnMessages.some((t) => t.id === m.id));
@@ -277,8 +247,9 @@ export class ChatEngine {
       id: randomUUID(),
       role: "assistant",
       at: Date.now(),
+      agent: turn.agent.id,
       status: "done",
-      parts: [{ type: "text", text: `Claude created the project **${to}** and moved this conversation there.` }],
+      parts: [{ type: "text", text: `${turn.agent.name} created the project **${to}** and moved this conversation there.` }],
     });
     this.save(from, source);
     this.turns.delete(from);
@@ -308,7 +279,25 @@ export class ChatEngine {
     for (const slug of [...this.turns.keys()]) this.cancel(slug);
   }
 
-  private buildContext(slug: string, context: Record<string, unknown>) {
+  /** The agent for a message: the one the page picked, else the chat's, else the default. */
+  private async resolveAgent(slug: string, requested: unknown) {
+    const agents = await this.deps.getAgents();
+    const id =
+      (typeof requested === "string" && requested) || this.load(slug).agent || (await this.deps.defaultAgent()) || agents[0]?.id;
+    const adapter = id ? getAgent(id) : undefined;
+    const info = agents.find((agent) => agent.id === id);
+    if (!adapter || !info) throw new StudioError(`Unknown agent "${String(id)}".`, "no_agent");
+    if (!info.found || !info.path) {
+      throw new StudioError(info.error ?? `${info.product} was not found.`, "no_agent");
+    }
+    return { adapter, info, path: info.path, agents };
+  }
+
+  /**
+   * The context block sent with a message, plus the images to attach. Captured when the user
+   * sends it (a queued message keeps the playhead it was sent with).
+   */
+  private buildContext(slug: string, context: Record<string, unknown>, agent: AgentAdapter) {
     const page = { ...(this.deps.getPageContext() ?? {}), ...context };
     const dir = projectDir(this.deps.paths, slug);
     const lines = [
@@ -330,8 +319,9 @@ export class ChatEngine {
       lines.push(`Selected clips: ${page.selectedClipIds.join(", ")}`);
     }
     const attachments = Array.isArray(context.attachments) ? context.attachments.filter((a): a is string => typeof a === "string") : [];
-    for (const attachment of attachments) {
-      lines.push(`Attached image (open it with Read): ${join(dir, attachment)}`);
+    const images = attachments.map((attachment) => join(dir, attachment));
+    for (const image of images) {
+      lines.push(`Attached image (${agent.imageHint}): ${image}`);
     }
     const references = (Array.isArray(context.references) ? context.references : [])
       .map((value) => asRecord(value))
@@ -341,25 +331,53 @@ export class ChatEngine {
     if (references.length) {
       lines.push(`The user is pointing at these project files (paths relative to the project folder):`);
       for (const ref of references) {
-        const hint = ref.kind === "image" ? " (an image: open it with Read to see it)" : ref.kind === "audio" ? " (audio: use the listen/media tools)" : "";
+        const hint = ref.kind === "image" ? ` (an image: ${agent.imageHint})` : ref.kind === "audio" ? " (audio: use the listen/media tools)" : "";
         lines.push(`- ${ref.path} [${ref.kind}]${hint}`);
+        if (ref.kind === "image") images.push(join(dir, ref.path));
       }
       lines.push(`"Here", "now" or "at the playhead" means the playhead frame above.`);
     }
     lines.push(`</studio-context>`);
-    return { text: lines.join("\n"), attachments, references };
+    return { text: lines.join("\n"), attachments, references, images: images.filter((image) => existsSync(image)) };
   }
 
-  async send(slug: string, text: string, context: Record<string, unknown>) {
+  /**
+   * The conversation so far, for an agent that takes over a chat another agent started
+   * (sessions can't move between CLIs). The project files stay the source of truth.
+   */
+  private handoff(file: ChatFile, agents: AgentInfo[], to: AgentAdapter, skipId: string) {
+    const nameOf = (id: string | undefined) => agents.find((agent) => agent.id === id)?.name ?? "Assistant";
+    const lines: string[] = [];
+    for (const message of file.messages.slice(-16)) {
+      if (message.id === skipId || message.status === "queued") continue;
+      const text =
+        message.role === "user"
+          ? (message.text ?? "")
+          : (message.parts ?? [])
+              .map((part) => (part.type === "text" ? part.text : ""))
+              .join("")
+              .trim();
+      if (!text.trim()) continue;
+      const who = message.role === "user" ? "User" : nameOf(message.agent ?? file.agent ?? undefined);
+      lines.push(`${who}: ${text.length > 700 ? `${text.slice(0, 700)}…` : text}`);
+    }
+    if (!lines.length) return "";
+    return [
+      `<earlier-conversation>`,
+      `This chat was started with ${nameOf(file.agent ?? undefined)}; you (${to.name}) are taking over. Recent messages, for context. Re-read the project files before changing them.`,
+      ...lines,
+      `</earlier-conversation>`,
+    ].join("\n");
+  }
+
+  async send(slug: string, text: string, context: Record<string, unknown>, agentId?: unknown) {
     const trimmed = text.trim();
     if (!trimmed) throw new StudioError("Type a message first.", "empty");
-    const claude = await this.deps.getClaude();
-    if (!claude.found || !claude.path) {
-      throw new StudioError(claude.error ?? "Claude Code was not found.", "no_claude");
-    }
+    const resolved = await this.resolveAgent(slug, agentId);
+    const { adapter } = resolved;
 
     // The context (playhead, selection, pointed-at files) is taken now, when the user sent it.
-    const { text: contextText, attachments, references } = this.buildContext(slug, context);
+    const { attachments, references } = this.buildContext(slug, context, adapter);
     const busy = this.turns.size > 0 || this.queue.length > 0;
     const userMessage: ChatMessage = {
       id: randomUUID(),
@@ -373,27 +391,38 @@ export class ChatEngine {
     this.upsertMessage(slug, userMessage);
     this.deps.emit("studio.chat", { slug, kind: "user", message: userMessage });
 
+    // Frozen now: a queued message keeps the playhead and selection it was sent with.
+    const frozen = { ...(this.deps.getPageContext() ?? {}), ...context };
     if (busy) {
-      // One Claude at a time: two runs writing the same workspace overwrite each other.
-      this.queue.push({ slug, messageId: userMessage.id, text: trimmed, contextText });
+      // One agent at a time: two runs writing the same workspace overwrite each other.
+      this.queue.push({ slug, messageId: userMessage.id, text: trimmed, agentId: adapter.id, context: frozen });
       debugLog(`chat ${slug}: queued (${this.queue.length} waiting)`);
       return { queued: true, position: this.queue.length, userMessageId: userMessage.id };
     }
-    const turnId = this.startTurn(slug, claude.path, contextText, trimmed);
+    const turnId = this.startTurn(slug, resolved, frozen, trimmed, userMessage.id);
     return { turnId, userMessageId: userMessage.id };
   }
 
-  private startTurn(slug: string, claudePath: string, contextText: string, text: string) {
+  /** Synchronous once the agent is resolved, so no other turn can start in between. */
+  private startTurn(slug: string, resolved: ResolvedAgent, context: Record<string, unknown>, text: string, userMessageId: string) {
+    const { adapter, path, agents } = resolved;
+    const { text: contextText, images } = this.buildContext(slug, context, adapter);
+    const file = this.load(slug);
+    // Another agent owns the saved session: start a new one and pass the conversation along.
+    const switching = Boolean(file.sessionId) && file.agent !== adapter.id;
+    const handoff = switching ? this.handoff(file, agents, adapter, userMessageId) : "";
     const assistant: ChatMessage = {
       id: randomUUID(),
       role: "assistant",
       at: Date.now(),
+      agent: adapter.id,
       parts: [],
       status: "running",
     };
     this.upsertMessage(slug, assistant);
     this.deps.emit("studio.chat", { slug, kind: "start", message: assistant });
-    this.startProcess(slug, claudePath, `${contextText}\n\n${text}`, assistant, this.load(slug).sessionId, false);
+    const prompt = [handoff, contextText, text].filter(Boolean).join("\n\n");
+    this.startProcess(slug, adapter, path, prompt, images, assistant, switching ? null : file.sessionId, false);
     return assistant.id;
   }
 
@@ -405,20 +434,35 @@ export class ChatEngine {
     const file = this.load(next.slug);
     const message = file.messages.find((m) => m.id === next.messageId);
     if (message) {
-      // It moves down to where Claude's answer will start, so each answer follows its message.
+      // It moves down to where the answer will start, so each answer follows its message.
       delete message.status;
       message.at = Date.now();
       file.messages = [...file.messages.filter((m) => m.id !== message.id), message];
       this.save(next.slug, file);
       this.deps.emit("studio.chat", { slug: next.slug, kind: "dequeue", message });
     }
-    const claude = await this.deps.getClaude();
-    if (!claude.found || !claude.path || this.turns.size > 0) {
-      this.queue.unshift(next);
-      return;
+    try {
+      const resolved = await this.resolveAgent(next.slug, next.agentId);
+      if (this.turns.size > 0) {
+        this.queue.unshift(next);
+        return;
+      }
+      debugLog(`chat ${next.slug}: starting queued message (${this.queue.length} still waiting)`);
+      this.startTurn(next.slug, resolved, next.context, next.text, next.messageId);
+    } catch (error) {
+      // The agent went missing since the message was queued: say so in the chat, then go on.
+      const failed: ChatMessage = {
+        id: randomUUID(),
+        role: "assistant",
+        at: Date.now(),
+        agent: next.agentId,
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      };
+      this.upsertMessage(next.slug, failed);
+      this.deps.emit("studio.chat", { slug: next.slug, kind: "done", message: failed });
+      void this.drain();
     }
-    debugLog(`chat ${next.slug}: starting queued message (${this.queue.length} still waiting)`);
-    this.startTurn(next.slug, claude.path, next.contextText, next.text);
   }
 
   /** The waiting messages, in order (for the page). */
@@ -443,7 +487,7 @@ export class ChatEngine {
     return { ok: true };
   }
 
-  /** Take a message out of the queue (it never reaches Claude). */
+  /** Take a message out of the queue (it never reaches the agent). */
   removeQueued(slug: string, messageId: string) {
     const index = this.queue.findIndex((q) => q.slug === slug && q.messageId === messageId);
     if (index < 0) return { ok: true, removed: false };
@@ -473,37 +517,29 @@ export class ChatEngine {
 
   private startProcess(
     slug: string,
-    claudePath: string,
+    agent: AgentAdapter,
+    agentPath: string,
     prompt: string,
+    images: string[],
     assistant: ChatMessage,
     sessionId: string | null,
     isRetry: boolean,
   ) {
-    const tools = this.deps.allowBash ? [...BASE_TOOLS, "Bash"] : BASE_TOOLS;
-    const args = [
-      "-p",
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      "--include-partial-messages",
-      "--permission-mode",
-      "acceptEdits",
-      "--allowedTools",
-      tools.join(","),
-      "--mcp-config",
-      this.deps.paths.mcpConfig,
-    ];
-    for (const dir of this.deps.addDirs) args.push("--add-dir", dir);
-    // Extra folders are for reading (e.g. the user's app repo): block Claude's file-edit tools there.
-    if (this.deps.addDirs.length) {
-      args.push("--disallowedTools", ...this.deps.addDirs.map((dir) => `Edit(${absoluteRule(dir)})`));
-    }
-    if (sessionId) args.push("--resume", sessionId);
+    const args = agent.buildArgs({
+      prompt,
+      sessionId,
+      images,
+      workspace: this.deps.paths.root,
+      mcp: this.deps.mcp,
+      mcpConfigPath: this.deps.paths.mcpConfig,
+      allowShell: this.deps.allowBash,
+      readDirs: this.deps.addDirs,
+    });
 
-    const child = spawnCommand(claudePath, args, {
+    const child = spawnCommand(agentPath, args, {
       cwd: this.deps.paths.root,
       env: {
-        // Voice-provider keys stay in the helper: Claude (and the tools it runs) never get them.
+        // Voice-provider keys stay in the helper: the agent (and the tools it runs) never get them.
         ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !VOICE_KEY_ENV_VARS.includes(name))),
         SCREENSLICK_STUDIO_WORKSPACE: this.deps.paths.root,
         SCREENSLICK_STUDIO_PROJECT: slug,
@@ -514,12 +550,14 @@ export class ChatEngine {
 
     const turn: Turn = {
       slug,
+      agent,
+      parser: agent.createParser(),
       message: assistant,
       child,
+      startedAt: Date.now(),
       cancelled: false,
-      streamedMessageIds: new Set(),
-      currentStreamMessageId: null,
       stderr: "",
+      lastError: null,
       gotResult: false,
       retriedWithoutResume: isRetry,
     };
@@ -528,6 +566,9 @@ export class ChatEngine {
     child.stdin?.on("error", () => undefined);
     child.stdin?.end(prompt);
 
+    const handleLine = (line: string) => {
+      for (const event of turn.parser.line(line)) this.handleEvent(turn, event);
+    };
     let buffer = "";
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -536,7 +577,7 @@ export class ChatEngine {
       while (newline >= 0) {
         const line = buffer.slice(0, newline).trim();
         buffer = buffer.slice(newline + 1);
-        if (line) this.handleLine(turn, line);
+        if (line) handleLine(line);
         newline = buffer.indexOf("\n");
       }
     });
@@ -548,17 +589,14 @@ export class ChatEngine {
       turn.stderr = `${turn.stderr}\n${error.message}`.slice(-4000);
     });
     child.on("close", (code) => {
-      if (buffer.trim()) this.handleLine(turn, buffer.trim());
+      if (buffer.trim()) handleLine(buffer.trim());
       const slug = turn.slug; // may have moved to a new project mid-turn
       this.turns.delete(slug);
-      const noSession = /no conversation found|session.*not found/i.test(turn.stderr);
-      if (!turn.cancelled && !turn.gotResult && noSession && !turn.retriedWithoutResume) {
+      if (!turn.cancelled && !turn.gotResult && sessionId && agent.isLostSession(turn.stderr) && !turn.retriedWithoutResume) {
         // The saved session is gone (e.g. cleared); start a fresh one.
         debugLog(`chat ${slug}: resume failed, starting a new session`);
-        const file = this.load(slug);
-        file.sessionId = null;
-        this.save(slug, file);
-        this.startProcess(slug, claudePath, prompt, assistant, null, true);
+        this.saveSession(slug, agent.id, null);
+        this.startProcess(slug, agent, agentPath, prompt, images, assistant, null, true);
         return;
       }
       if (turn.cancelled) {
@@ -566,7 +604,7 @@ export class ChatEngine {
       } else if (!turn.gotResult) {
         assistant.status = "error";
         assistant.error =
-          turn.stderr.trim().split(/\r?\n/).slice(-6).join("\n") || `Claude Code exited with code ${code}.`;
+          turn.lastError ?? (turn.stderr.trim().split(/\r?\n/).slice(-6).join("\n") || `${agent.product} exited with code ${code}.`);
       }
       this.finishRunningTools(assistant, assistant.status === "done" ? "done" : "error");
       this.upsertMessage(slug, assistant);
@@ -591,8 +629,9 @@ export class ChatEngine {
   }
 
   /**
-   * The pictures a step showed Claude, so the chat can show them too: frames the studio captured
-   * (copied out of the bridge's scratch folder, which it prunes) and images Claude read from the project.
+   * The pictures a step showed the agent, so the chat can show them too: frames the studio captured
+   * (copied out of the bridge's scratch folder, which it prunes) and images it read from the project.
+   * (The folder keeps its old name so earlier chats still find their pictures.)
    */
   private imagesFor(slug: string, part: Extract<ChatPart, { type: "tool" }>, content: unknown): string[] {
     try {
@@ -641,7 +680,7 @@ export class ChatEngine {
       case "Grep":
         return { summary: `${name} ${String(input.pattern ?? "").slice(0, 60)}` };
       case "Bash":
-        return { summary: `Ran ${String(input.description ?? input.command ?? "").slice(0, 80)}` };
+        return { summary: `Ran ${String(input.description ?? input.command ?? "").trim().split(/\r?\n/)[0].slice(0, 80)}` };
       case "WebSearch":
         return { summary: `Searched “${String(input.query ?? "").slice(0, 60)}”` };
       case "WebFetch":
@@ -665,122 +704,66 @@ export class ChatEngine {
     else parts.push({ type: "text", text });
   }
 
-  private handleLine(turn: Turn, line: string) {
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      return;
-    }
+  /** Apply one agent event to the running turn: chat parts, session, result. */
+  private handleEvent(turn: Turn, event: AgentEvent) {
     const { slug } = turn;
+    const parts = (turn.message.parts ??= []);
     switch (event.type) {
-      case "system": {
-        if (event.subtype === "init" && typeof event.session_id === "string") {
-          const file = this.load(slug);
-          if (file.sessionId !== event.session_id) {
-            file.sessionId = event.session_id;
-            this.save(slug, file);
-          }
-        }
+      case "session":
+        this.saveSession(slug, turn.agent.id, event.sessionId);
         return;
-      }
-      case "stream_event": {
-        const inner = asRecord(event.event);
-        if (inner.type === "message_start") {
-          const id = asRecord(inner.message).id;
-          if (typeof id === "string") {
-            turn.currentStreamMessageId = id;
-            turn.streamedMessageIds.add(id);
-          }
-          // Separate consecutive assistant messages with a paragraph break.
-          const parts = turn.message.parts ?? [];
-          const last = parts[parts.length - 1];
-          if (last && last.type === "text" && last.text && !last.text.endsWith("\n\n")) {
-            last.text += "\n\n";
-          }
-        } else if (inner.type === "content_block_delta") {
-          const delta = asRecord(inner.delta);
-          if (delta.type === "text_delta" && typeof delta.text === "string") {
-            this.appendText(turn, delta.text);
-            this.deps.emit("studio.chat", { slug, kind: "text", messageId: turn.message.id, text: delta.text });
-          }
-        }
-        return;
-      }
-      case "assistant": {
-        const message = asRecord(event.message);
-        const id = typeof message.id === "string" ? message.id : null;
-        const content = Array.isArray(message.content) ? message.content : [];
-        for (const blockRaw of content) {
-          const block = asRecord(blockRaw);
-          if (block.type === "text" && typeof block.text === "string" && !(id && turn.streamedMessageIds.has(id))) {
-            this.appendText(turn, block.text);
-            this.deps.emit("studio.chat", { slug, kind: "text", messageId: turn.message.id, text: block.text });
-          }
-          if (block.type === "tool_use" && typeof block.id === "string" && typeof block.name === "string") {
-            const parts = (turn.message.parts ??= []);
-            if (parts.some((part) => part.type === "tool" && part.id === block.id)) continue;
-            const { summary, file } = this.toolSummary(slug, block.name, asRecord(block.input));
-            const part: ChatPart = { type: "tool", id: block.id, name: block.name, summary, file, status: "running" };
-            parts.push(part);
-            this.deps.emit("studio.chat", { slug, kind: "tool", messageId: turn.message.id, part });
-          }
-        }
+      case "message-start": {
+        // Separate consecutive assistant messages with a paragraph break.
+        const last = parts[parts.length - 1];
+        if (last && last.type === "text" && last.text && !last.text.endsWith("\n\n")) last.text += "\n\n";
         this.upsertMessage(slug, turn.message);
         return;
       }
-      case "user": {
-        const message = asRecord(event.message);
-        const content = Array.isArray(message.content) ? message.content : [];
-        for (const blockRaw of content) {
-          const block = asRecord(blockRaw);
-          if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
-          const part = turn.message.parts?.find(
-            (candidate) => candidate.type === "tool" && candidate.id === block.tool_use_id,
-          );
-          if (!part || part.type !== "tool") continue;
-          part.status = block.is_error ? "error" : "done";
-          if (!block.is_error) {
-            const images = this.imagesFor(slug, part, block.content);
-            if (images.length > 0) part.images = images;
-          }
-          if (block.is_error) {
-            const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? "");
-            part.error = text.slice(0, 400);
-          }
-          this.deps.emit("studio.chat", { slug, kind: "tool_result", messageId: turn.message.id, part });
-          if (FILE_TOOLS.has(part.name) && part.status === "done") {
-            this.deps.emit("studio.chat", { slug, kind: "file", messageId: turn.message.id, file: part.file });
-          }
+      case "text":
+        this.appendText(turn, event.text);
+        this.deps.emit("studio.chat", { slug, kind: "text", messageId: turn.message.id, text: event.text });
+        return;
+      case "tool-start": {
+        if (parts.some((part) => part.type === "tool" && part.id === event.id)) return;
+        const { summary, file } = this.toolSummary(slug, event.name, event.input);
+        const part: ChatPart = { type: "tool", id: event.id, name: event.name, summary, file, status: "running" };
+        parts.push(part);
+        this.deps.emit("studio.chat", { slug, kind: "tool", messageId: turn.message.id, part });
+        this.upsertMessage(slug, turn.message);
+        return;
+      }
+      case "tool-end": {
+        const part = parts.find((candidate) => candidate.type === "tool" && candidate.id === event.id);
+        if (!part || part.type !== "tool") return;
+        part.status = event.ok ? "done" : "error";
+        if (event.ok) {
+          const images = this.imagesFor(slug, part, event.content);
+          if (images.length > 0) part.images = images;
+        } else {
+          part.error = event.error?.slice(0, 400);
+        }
+        this.deps.emit("studio.chat", { slug, kind: "tool_result", messageId: turn.message.id, part });
+        if (FILE_TOOLS.has(part.name) && part.status === "done") {
+          this.deps.emit("studio.chat", { slug, kind: "file", messageId: turn.message.id, file: part.file });
         }
         return;
       }
+      case "error":
+        turn.lastError = event.message.slice(0, 1200);
+        return;
       case "result": {
         turn.gotResult = true;
-        const isError = Boolean(event.is_error) || (typeof event.subtype === "string" && event.subtype !== "success");
-        turn.message.status = isError ? "error" : "done";
-        if (isError) {
-          turn.message.error =
-            typeof event.result === "string" && event.result
-              ? event.result.slice(0, 1200)
-              : `Claude stopped (${String(event.subtype)}).`;
-        }
-        if (typeof event.total_cost_usd === "number") turn.message.costUsd = event.total_cost_usd;
-        if (typeof event.duration_ms === "number") turn.message.durationMs = event.duration_ms;
-        if (typeof event.session_id === "string") {
-          const file = this.load(slug);
-          file.sessionId = event.session_id;
-          this.save(slug, file);
-        }
+        turn.message.status = event.ok ? "done" : "error";
+        if (!event.ok) turn.message.error = event.error ?? turn.lastError ?? `${turn.agent.name} stopped.`;
+        if (event.costUsd !== undefined) turn.message.costUsd = event.costUsd;
+        turn.message.durationMs = event.durationMs ?? Date.now() - turn.startedAt;
+        if (event.sessionId) this.saveSession(slug, turn.agent.id, event.sessionId);
         // If nothing was streamed (very short answers), fall back to the final text.
-        const hasText = (turn.message.parts ?? []).some((part) => part.type === "text" && part.text.trim());
-        if (!hasText && !isError && typeof event.result === "string" && event.result.trim()) {
-          this.appendText(turn, event.result);
-        }
+        const hasText = parts.some((part) => part.type === "text" && part.text.trim());
+        if (!hasText && event.ok && event.text?.trim()) this.appendText(turn, event.text);
+        this.upsertMessage(slug, turn.message);
         return;
       }
-      default:
-        return;
     }
   }
 }

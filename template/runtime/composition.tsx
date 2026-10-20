@@ -11,6 +11,7 @@ import {
   interpolate,
   useCurrentFrame,
   useRemotionEnvironment,
+  useVideoConfig,
 } from "remotion";
 import { Audio, Video } from "@remotion/media";
 // The ScreenSlick component library, provided by the studio page (and by a copy in
@@ -36,7 +37,9 @@ import type {
   StudioFont,
   StudioTrack,
   TextClip,
+  CursorTrack,
   VideoClip,
+  VideoCursor,
 } from "./types";
 
 export type SceneRegistry = Record<string, ComponentType<SceneProps & Record<string, unknown>>>;
@@ -316,7 +319,7 @@ function gradeFilter(grade: VideoClip["grade"]): string | undefined {
 function VideoClipView({ clip, trackMuted, gain }: { clip: VideoClip; trackMuted: boolean; gain: number }) {
   const style = useClipStyle(clip);
   return (
-    <div style={{ ...boxStyle(clip.box), ...style, overflow: "hidden" }}>
+    <div style={{ ...boxStyle(clip.box), ...style, overflow: "hidden", borderRadius: clip.radius }}>
       <Video
         src={asset(clip.src)}
         trimBefore={clip.trimStart && clip.trimStart > 0 ? clip.trimStart : undefined}
@@ -325,6 +328,227 @@ function VideoClipView({ clip, trackMuted, gain }: { clip: VideoClip; trackMuted
         playbackRate={clip.playbackRate}
         style={{ width: "100%", height: "100%", objectFit: clip.fit ?? "cover", filter: gradeFilter(clip.grade) }}
       />
+      {clip.cursor ? <CursorOverlay cursor={clip.cursor} clip={clip} /> : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Recorded cursor (`cursor` on a video clip): the pointer and click ripples from a
+// `<video>.cursor.json`, drawn inside the clip so it follows its trim, speed and box.
+
+const loadedCursorTracks = new Map<string, CursorTrack | null>();
+const pendingCursorTracks = new Map<string, Promise<CursorTrack | null>>();
+
+function loadCursorTrack(url: string) {
+  let pending = pendingCursorTracks.get(url);
+  if (!pending) {
+    pending = fetch(url)
+      .then((response) => (response.ok ? (response.json() as Promise<CursorTrack>) : null))
+      .catch(() => null)
+      .then((track) => {
+        loadedCursorTracks.set(url, track);
+        return track;
+      });
+    pendingCursorTracks.set(url, pending);
+  }
+  return pending;
+}
+
+function useCursorTrack(src: string) {
+  const url = asset(src);
+  const [track, setTrack] = useState(() => loadedCursorTracks.get(url) ?? null);
+  const [handle] = useState(() =>
+    loadedCursorTracks.has(url) ? null : delayRender(`Loading cursor ${src}`, { timeoutInMilliseconds: 20_000 }),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    loadCursorTrack(url)
+      .then((loaded) => {
+        if (!cancelled) setTrack(loaded);
+      })
+      .finally(() => {
+        if (handle !== null) continueRender(handle);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url, handle]);
+  return track;
+}
+
+function cursorPointAt(path: CursorTrack["path"], frame: number) {
+  let low = 0;
+  let high = path.length - 1;
+  let index = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (path[mid][0] <= frame) {
+      index = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  if (index < 0) return null;
+  const [from, x, y] = path[index];
+  if (x === null || y === null) return null;
+  const next = path[index + 1];
+  if (!next || next[1] === null || next[2] === null || next[0] <= from) return { x, y };
+  const t = Math.min(1, (frame - from) / (next[0] - from));
+  return { x: x + (next[1] - x) * t, y: y + (next[2] - y) * t };
+}
+
+const CURSOR_POINTER_PATH =
+  "M3.55 1.75Q2.65 1.4 2.65 2.45L2.65 19.95Q2.65 21.45 3.6 21.75Q4.2 21.95 4.85 21.3L8.25 17.85Q8.65 17.45 8.9 17.98L11.65 23.4Q12.15 24.35 13.1 23.88L15.55 22.7Q16.55 22.22 16.05 21.25L13.3 15.8Q13.02 15.25 13.65 15.25L19.1 15.25Q20.55 15.25 20.78 14.2Q20.95 13.42 20.05 12.78L4.45 1.95Q3.98 1.62 3.55 1.75Z";
+const CURSOR_GREEN = "#2dd47a";
+const HAND_EMOJI = "\u{1F446}";
+
+function CursorOverlay({ cursor, clip }: { cursor: VideoCursor; clip: VideoClip }) {
+  const frame = useCurrentFrame();
+  const { width: compWidth, height: compHeight } = useVideoConfig();
+  const track = useCursorTrack(cursor.src);
+  // Edits ("source" space) carry clicks for timing only: their positions don't match the picture.
+  if (!track || track.space !== "video") return null;
+
+  const style = cursor.style ?? "classic";
+  const fps = track.fps;
+  const sourceFrame = (clip.trimStart ?? 0) + frame * (clip.playbackRate ?? 1);
+
+  // Where the video's picture sits inside the clip box (contain letterboxes, cover crops).
+  const box = clip.box ?? { x: 0, y: 0, width: 1, height: 1 };
+  const boxWidth = box.width * compWidth;
+  const boxHeight = box.height * compHeight;
+  const videoWidth = track.width ?? boxWidth;
+  const videoHeight = track.height ?? boxHeight;
+  const scale =
+    (clip.fit ?? "cover") === "contain"
+      ? Math.min(boxWidth / videoWidth, boxHeight / videoHeight)
+      : Math.max(boxWidth / videoWidth, boxHeight / videoHeight);
+  const offsetX = (boxWidth - videoWidth * scale) / 2;
+  const offsetY = (boxHeight - videoHeight * scale) / 2;
+  const toBox = (x: number, y: number) => ({
+    left: offsetX + x * videoWidth * scale,
+    top: offsetY + y * videoHeight * scale,
+  });
+
+  // Sized to the frame, not the box, so a punch-in doesn't blow the pointer up.
+  const size =
+    Math.max(18, Math.min(44, Math.min(compWidth, compHeight) * 0.032)) * ((cursor.size ?? 100) / 100);
+
+  // Smoothing averages the path over a short window around this frame.
+  const reach = Math.round((cursor.smoothing ?? 0.3) * 0.2 * fps);
+  let sumX = 0;
+  let sumY = 0;
+  let count = 0;
+  for (let offset = -reach; offset <= reach; offset += 1) {
+    const sample = cursorPointAt(track.path, sourceFrame + offset);
+    if (!sample) continue;
+    sumX += sample.x;
+    sumY += sample.y;
+    count += 1;
+  }
+  const point = cursorPointAt(track.path, sourceFrame) && count ? toBox(sumX / count, sumY / count) : null;
+
+  const rippleFrames = 0.6 * fps;
+  const ripples =
+    cursor.clicks === false
+      ? []
+      : track.clicks.filter((click) => sourceFrame >= click.frame && sourceFrame - click.frame < rippleFrames);
+  let lastPressFrame: number | null = null;
+  for (const click of track.clicks) {
+    if (click.frame > sourceFrame) break;
+    lastPressFrame = click.frame;
+  }
+  const press = lastPressFrame === null ? 0 : Math.max(0, 1 - (sourceFrame - lastPressFrame) / (0.3 * fps));
+  const rippleColor = style === "accent" || style === "spotlight" ? CURSOR_GREEN : "#ffffff";
+
+  return (
+    <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+      {ripples.map((click) => {
+        const progress = (sourceFrame - click.frame) / rippleFrames;
+        const diameter = size * (0.6 + 2.2 * progress);
+        const at = toBox(click.x, click.y);
+        return (
+          <div
+            key={click.frame}
+            style={{
+              position: "absolute",
+              left: at.left - diameter / 2,
+              top: at.top - diameter / 2,
+              width: diameter,
+              height: diameter,
+              borderRadius: "50%",
+              border: `${Math.max(2, size * 0.09)}px solid ${rippleColor}`,
+              boxShadow: "0 0 6px rgba(0,0,0,0.45)",
+              boxSizing: "border-box",
+              opacity: 0.9 * (1 - progress),
+            }}
+          />
+        );
+      })}
+      {point && style === "spotlight" ? (
+        <div
+          style={{
+            position: "absolute",
+            left: point.left - size * 0.42,
+            top: point.top - size * 0.42,
+            width: size * 0.84,
+            height: size * 0.84,
+            borderRadius: "50%",
+            border: `${Math.max(2, size * 0.08)}px solid ${CURSOR_GREEN}`,
+            background: "rgba(45, 212, 122, 0.16)",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.45)",
+            boxSizing: "border-box",
+            transform: `scale(${1 - press * 0.15})`,
+          }}
+        />
+      ) : null}
+      {point && style === "hand" ? (
+        <div
+          style={{
+            position: "absolute",
+            left: point.left - size * 0.42,
+            top: point.top - size * 0.16,
+            fontSize: size,
+            lineHeight: 1,
+            textShadow: "0 1px 3px rgba(0,0,0,0.55)",
+            transform: `rotate(${press * 9}deg) scale(${1 - press * 0.05})`,
+            transformOrigin: "42% 16%",
+          }}
+        >
+          {HAND_EMOJI}
+        </div>
+      ) : null}
+      {point && (style === "classic" || style === "accent") ? (
+        <svg
+          width={size}
+          height={size * 1.1}
+          viewBox="0 0 24 26.4"
+          style={{
+            position: "absolute",
+            left: point.left - (3.55 / 24) * size,
+            top: point.top - (1.75 / 24) * size,
+            overflow: "visible",
+            transform: `scale(${1 - press * 0.08})`,
+            transformOrigin: `${(3.55 / 24) * 100}% ${(1.75 / 26.4) * 100}%`,
+          }}
+        >
+          <defs>
+            <filter id="studio-cursor-shadow" x="-50%" y="-50%" width="200%" height="200%">
+              <feDropShadow dx="0" dy="1.5" stdDeviation="1.1" floodColor="#000000" floodOpacity="0.65" />
+            </filter>
+          </defs>
+          <path
+            d={CURSOR_POINTER_PATH}
+            fill={style === "accent" ? CURSOR_GREEN : "#ffffff"}
+            stroke="#000000"
+            strokeWidth={2.4}
+            strokeLinejoin="round"
+            filter="url(#studio-cursor-shadow)"
+          />
+        </svg>
+      ) : null}
     </div>
   );
 }

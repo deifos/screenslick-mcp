@@ -93,6 +93,16 @@ const gradeSchema = z
     hue: finite.min(-180).max(180).optional(),
   })
   .strict();
+const videoCursorSchema = z
+  .object({
+    /** `<video>.cursor.json` (path, clicks and scrolls in frames of the video file). */
+    src: srcSchema,
+    style: z.enum(["classic", "accent", "spotlight", "hand", "hidden"]).optional(),
+    size: finite.min(50).max(200).optional(),
+    clicks: z.boolean().optional(),
+    smoothing: unit.optional(),
+  })
+  .strict();
 const videoFields = {
   src: srcSchema,
   trimStart: frame.optional(),
@@ -101,7 +111,9 @@ const videoFields = {
   muted: z.boolean().optional(),
   fit: z.enum(["cover", "contain"]).optional(),
   box: boxSchema.optional(),
+  radius: finite.min(0).optional(),
   playbackRate: finite.positive().optional(),
+  cursor: videoCursorSchema.optional(),
 };
 const imageFields = {
   src: srcSchema,
